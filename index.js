@@ -151,15 +151,45 @@ functions.http("helloHttp", async (req, res) => {
     }
 
     function createDisc() {
-      if (disc) scene.remove(disc);
-      const geometry = new THREE.CylinderGeometry(discDiameter / 2, discDiameter / 2, discHeight, 128, 1, true);
-      const material = new THREE.MeshStandardMaterial({ color: 0x64748b, transparent: true, opacity: 0.22, side: THREE.DoubleSide });
-      disc = new THREE.Mesh(geometry, material);
-      disc.rotation.x = Math.PI / 2;
+      if (disc) {
+        scene.remove(disc);
+      }
+
+      const group = new THREE.Group();
+
+      const geometry = new THREE.CylinderGeometry(
+        discDiameter / 2,
+        discDiameter / 2,
+        discHeight,
+        128,
+        1,
+        true
+      );
+
+      // Three.js crea el cilindro con altura en Y.
+      // Lo rotamos para que la altura quede en Z.
+      geometry.rotateX(Math.PI / 2);
+
+      const material = new THREE.MeshStandardMaterial({
+        color: 0x64748b,
+        transparent: true,
+        opacity: 0.22,
+        side: THREE.DoubleSide
+      });
+
+      const body = new THREE.Mesh(geometry, material);
+      group.add(body);
+
+      const edgeGeometry = new THREE.EdgesGeometry(geometry);
+      const edgeMaterial = new THREE.LineBasicMaterial({ color: 0xcbd5e1 });
+      const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+      group.add(edges);
+
+      // El disco queda centrado en Z, con mitad arriba y mitad abajo.
+      group.position.set(0, 0, 0);
+
+      disc = group;
       scene.add(disc);
-      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), new THREE.LineBasicMaterial({ color: 0xcbd5e1 }));
-      edges.rotation.x = Math.PI / 2;
-      disc.add(edges);
     }
 
     function loadSTL(event) {
@@ -208,7 +238,7 @@ functions.http("helloHttp", async (req, res) => {
       mesh.position.z -= center.z;
       const newBox = new THREE.Box3().setFromObject(mesh);
       const size = newBox.getSize(new THREE.Vector3());
-      mesh.position.z += size.z / 2;
+      mesh.position.z += discHeight / 2 + size.z / 2;
       lockedZ = mesh.position.z;
       controls.target.set(0, 0, 0);
       controls.update();
@@ -264,7 +294,6 @@ functions.http("helloHttp", async (req, res) => {
       if (!model) return;
       model.updateMatrixWorld(true);
       const radiusLimit = discDiameter / 2;
-      const halfHeight = discHeight / 2;
       const position = model.geometry.attributes.position;
       const vertex = new THREE.Vector3();
       let maxRadius = 0, minZ = Infinity, maxZ = -Infinity;
@@ -275,20 +304,21 @@ functions.http("helloHttp", async (req, res) => {
         if (vertex.z < minZ) minZ = vertex.z;
         if (vertex.z > maxZ) maxZ = vertex.z;
       }
-      const fits = maxRadius <= radiusLimit && minZ >= -halfHeight && maxZ <= halfHeight;
+      const modelHeight = maxZ - minZ;
+      const fits = maxRadius <= radiusLimit && modelHeight <= discHeight;
       const check = document.getElementById("discCheck");
       const state = document.getElementById("discState");
       if (fits) {
         check.innerText = "OK dentro del disco"; check.style.color = "#86efac"; state.value = "OK dentro del disco";
         viewer.classList.remove("out-of-disc");
         if (model.material) model.material.color.setHex(0x38bdf8);
-        if (disc && disc.material) disc.material.color.setHex(0x64748b);
+        setDiscColor(0x64748b);
         setStatus("OK dentro del disco", "ok");
       } else {
         check.innerText = "Fuera del disco"; check.style.color = "#fca5a5"; state.value = "Fuera del disco";
         viewer.classList.add("out-of-disc");
         if (model.material) model.material.color.setHex(0xf97316);
-        if (disc && disc.material) disc.material.color.setHex(0xb91c1c);
+        setDiscColor(0xb91c1c);
         setStatus("Fuera del disco: revisá diámetro o altura.", "warning");
       }
     }
@@ -299,6 +329,15 @@ functions.http("helloHttp", async (req, res) => {
       box.className = "status";
       if (type === "warning") box.classList.add("warning");
       if (type === "error") box.classList.add("error");
+    }
+
+    function setDiscColor(color) {
+      if (!disc) return;
+      disc.traverse(function(child) {
+        if (child.isMesh && child.material && child.material.color) {
+          child.material.color.setHex(color);
+        }
+      });
     }
 
     function configureTransformAxes() {
