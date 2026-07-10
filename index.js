@@ -116,6 +116,7 @@ functions.http("helloHttp", async (req, res) => {
       scene = new THREE.Scene();
       scene.background = new THREE.Color(0x020617);
       camera = new THREE.PerspectiveCamera(45, viewer.clientWidth / viewer.clientHeight, 0.1, 2000);
+      camera.up.set(0, 0, 1);
       camera.position.set(120, 120, 120);
       renderer = new THREE.WebGLRenderer({ antialias: true });
       renderer.setSize(viewer.clientWidth, viewer.clientHeight);
