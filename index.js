@@ -85,14 +85,19 @@ functions.http("helloHttp", async (req, res) => {
       <button class="secondary" onclick="rotateModel(90)">Rotar Z +90°</button>
       <button class="secondary" onclick="flipModel('x')">Voltear X 180°</button>
       <button class="secondary" onclick="flipModel('y')">Voltear Y 180°</button>
-      <button class="secondary" onclick="supportCurrentModel()">Apoyar sobre disco</button>
+      <button class="secondary" onclick="supportCurrentModel()">Apoyar arriba del disco</button>
+      <button class="secondary" onclick="centerModelInThickness()">Centrar en espesor</button>
+      <button class="secondary" onclick="moveModelZ(1)">Z +1 mm</button>
+      <button class="secondary" onclick="moveModelZ(-1)">Z -1 mm</button>
+      <button class="secondary" onclick="moveModelZ(0.1)">Z +0.1 mm</button>
+      <button class="secondary" onclick="moveModelZ(-0.1)">Z -0.1 mm</button>
       <label>Posición X</label><input id="posX" value="0.00 mm" readonly />
       <label>Posición Y</label><input id="posY" value="0.00 mm" readonly />
-      <label>Posición Z</label><input id="posZ" value="0.00 mm" readonly />
+      <label>Posición Z</label><input id="posZ" type="number" value="0.00" step="0.1" onchange="setModelZFromInput()" oninput="setModelZFromInput()" />
       <label>Rotación Z</label><input id="rotationZ" value="0°" readonly />
       <label>Estado dentro del disco</label><input id="discState" value="-" readonly />
       <label>Herramienta</label><select><option>Fresa 2.0 mm</option><option>Fresa 1.0 mm</option><option>Fresa 0.6 mm</option><option>Fresa 0.3 mm</option></select>
-      <div class="info-card"><h3>Medidas STL</h3><div class="metric"><span>Ancho X</span><span id="sizeX">-</span></div><div class="metric"><span>Profundidad Y</span><span id="sizeY">-</span></div><div class="metric"><span>Altura Z</span><span id="sizeZ">-</span></div><div class="metric"><span>Triángulos</span><span id="triangles">-</span></div><div class="metric"><span>Estado disco</span><span id="discCheck">-</span></div></div>
+      <div class="info-card"><h3>Medidas STL</h3><div class="metric"><span>Ancho X</span><span id="sizeX">-</span></div><div class="metric"><span>Profundidad Y</span><span id="sizeY">-</span></div><div class="metric"><span>Altura Z</span><span id="sizeZ">-</span></div><div class="metric"><span>Triángulos</span><span id="triangles">-</span></div><div class="metric"><span>Z mínimo STL</span><span id="minZ">-</span></div><div class="metric"><span>Z máximo STL</span><span id="maxZ">-</span></div><div class="metric"><span>Límite inferior disco</span><span id="discBottom">-</span></div><div class="metric"><span>Límite superior disco</span><span id="discTop">-</span></div><div class="metric"><span>Estado disco</span><span id="discCheck">-</span></div></div>
       <button class="success" style="margin-top: 20px;" onclick="fakeToolpath()">Calcular trayectorias</button>
       <button class="secondary" onclick="fakeExport()">Exportar G-code</button>
     </aside>
@@ -139,7 +144,6 @@ functions.http("helloHttp", async (req, res) => {
       transformControls.addEventListener("dragging-changed", function(event) { controls.enabled = !event.value; });
       transformControls.addEventListener("objectChange", function() {
         if (!model) return;
-        supportModelOnDisc(model);
         updateModelStats();
         updatePlacementUI();
         checkDiscFit();
@@ -242,7 +246,7 @@ functions.http("helloHttp", async (req, res) => {
       mesh.position.x -= center.x;
       mesh.position.y -= center.y;
       mesh.position.z -= center.z;
-      supportModelOnDisc(mesh);
+      lockedZ = mesh.position.z;
       controls.target.set(0, 0, 0);
       controls.update();
     }
@@ -287,11 +291,22 @@ functions.http("helloHttp", async (req, res) => {
       const box = new THREE.Box3().setFromObject(model);
       const size = box.getSize(new THREE.Vector3());
       modelStats.size = { x: Number(size.x.toFixed(2)), y: Number(size.y.toFixed(2)), z: Number(size.z.toFixed(2)) };
+      modelStats.box = {
+        minZ: Number(box.min.z.toFixed(2)),
+        maxZ: Number(box.max.z.toFixed(2)),
+        discBottomZ: Number((-discHeight / 2).toFixed(2)),
+        discTopZ: Number((discHeight / 2).toFixed(2)),
+        status: document.getElementById("discState").value || "-"
+      };
       modelStats.triangles = Math.round(model.geometry.attributes.position.count / 3);
       document.getElementById("sizeX").innerText = modelStats.size.x.toFixed(2) + " mm";
       document.getElementById("sizeY").innerText = modelStats.size.y.toFixed(2) + " mm";
       document.getElementById("sizeZ").innerText = modelStats.size.z.toFixed(2) + " mm";
       document.getElementById("triangles").innerText = modelStats.triangles.toLocaleString("es-AR");
+      document.getElementById("minZ").innerText = modelStats.box.minZ.toFixed(2) + " mm";
+      document.getElementById("maxZ").innerText = modelStats.box.maxZ.toFixed(2) + " mm";
+      document.getElementById("discBottom").innerText = modelStats.box.discBottomZ.toFixed(2) + " mm";
+      document.getElementById("discTop").innerText = modelStats.box.discTopZ.toFixed(2) + " mm";
     }
 
     function updatePlacementUI() {
@@ -311,34 +326,43 @@ functions.http("helloHttp", async (req, res) => {
     function checkDiscFit() {
       if (!model) return;
       model.updateMatrixWorld(true);
-      const radiusLimit = discDiameter / 2;
-      const position = model.geometry.attributes.position;
-      const vertex = new THREE.Vector3();
-      let maxRadius = 0, minZ = Infinity, maxZ = -Infinity;
-      for (let i = 0; i < position.count; i++) {
-        vertex.fromBufferAttribute(position, i).applyMatrix4(model.matrixWorld);
-        const radius = Math.sqrt(vertex.x * vertex.x + vertex.y * vertex.y);
-        if (radius > maxRadius) maxRadius = radius;
-        if (vertex.z < minZ) minZ = vertex.z;
-        if (vertex.z > maxZ) maxZ = vertex.z;
-      }
-      const modelHeight = maxZ - minZ;
-      const fits = maxRadius <= radiusLimit && modelHeight <= discHeight;
+      const box = new THREE.Box3().setFromObject(model);
+      const discRadius = discDiameter / 2;
+      const discTopZ = discHeight / 2;
+      const discBottomZ = -discHeight / 2;
+      const corners = [
+        [box.min.x, box.min.y], [box.min.x, box.max.y],
+        [box.max.x, box.min.y], [box.max.x, box.max.y]
+      ];
+      const fitsXY = corners.every(function(corner) {
+        return Math.sqrt(corner[0] * corner[0] + corner[1] * corner[1]) <= discRadius;
+      });
+      const fitsZ = box.min.z >= discBottomZ && box.max.z <= discTopZ;
+      let message = "OK dentro del disco";
+      if (!fitsXY && !fitsZ) message = "Fuera del disco en XY y Z";
+      else if (!fitsXY) message = "Fuera del disco en XY";
+      else if (!fitsZ) message = "Fuera del disco en Z";
+      const fits = fitsXY && fitsZ;
       const check = document.getElementById("discCheck");
       const state = document.getElementById("discState");
-      if (fits) {
-        check.innerText = "OK dentro del disco"; check.style.color = "#86efac"; state.value = "OK dentro del disco";
-        viewer.classList.remove("out-of-disc");
-        if (model.material) model.material.color.setHex(0x38bdf8);
-        setDiscColor(0x64748b);
-        setStatus("OK dentro del disco", "ok");
-      } else {
-        check.innerText = "Fuera del disco"; check.style.color = "#fca5a5"; state.value = "Fuera del disco";
-        viewer.classList.add("out-of-disc");
-        if (model.material) model.material.color.setHex(0xf97316);
-        setDiscColor(0xb91c1c);
-        setStatus("Fuera del disco: revisá diámetro o altura.", "warning");
-      }
+      check.innerText = message;
+      state.value = message;
+      check.style.color = fits ? "#86efac" : "#fca5a5";
+      viewer.classList.toggle("out-of-disc", !fits);
+      if (model.material) model.material.color.setHex(fits ? 0x38bdf8 : 0xf97316);
+      setDiscColor(fits ? 0x64748b : 0xb91c1c);
+      setStatus(message, fits ? "ok" : "warning");
+      modelStats.box = {
+        minZ: Number(box.min.z.toFixed(2)),
+        maxZ: Number(box.max.z.toFixed(2)),
+        discBottomZ: Number(discBottomZ.toFixed(2)),
+        discTopZ: Number(discTopZ.toFixed(2)),
+        status: message
+      };
+      document.getElementById("minZ").innerText = modelStats.box.minZ.toFixed(2) + " mm";
+      document.getElementById("maxZ").innerText = modelStats.box.maxZ.toFixed(2) + " mm";
+      document.getElementById("discBottom").innerText = modelStats.box.discBottomZ.toFixed(2) + " mm";
+      document.getElementById("discTop").innerText = modelStats.box.discTopZ.toFixed(2) + " mm";
     }
 
     function setStatus(message, type) {
@@ -367,14 +391,16 @@ functions.http("helloHttp", async (req, res) => {
     function onResize() { camera.aspect = viewer.clientWidth / viewer.clientHeight; camera.updateProjectionMatrix(); renderer.setSize(viewer.clientWidth, viewer.clientHeight); }
     function animate() { requestAnimationFrame(animate); controls.update(); if (selectionBox && selectedModel) selectionBox.setFromObject(selectedModel); renderer.render(scene, camera); }
 
-    window.updateDisc = function() { const parts = document.getElementById("discSize").value.split(","); discDiameter = Number(parts[0]); discHeight = Number(parts[1]); createDisc(); if (model) { supportModelOnDisc(model); updateModelStats(); updatePlacementUI(); } checkDiscFit(); };
+    window.updateDisc = function() { const parts = document.getElementById("discSize").value.split(","); discDiameter = Number(parts[0]); discHeight = Number(parts[1]); createDisc(); if (model) { updateModelStats(); updatePlacementUI(); } checkDiscFit(); };
     window.setTransformMode = function(mode) { currentMode = mode; if (transformControls) { transformControls.setMode(mode); configureTransformAxes(); } document.getElementById("moveModeBtn").className = mode === "translate" ? "active" : "secondary"; document.getElementById("rotateModeBtn").className = mode === "rotate" ? "active" : "secondary"; if (model && selectedModel !== model) selectModel(model); };
-    window.rotateModel = function(degrees) { if (!model) { setStatus("Primero importá un STL.", "warning"); return; } model.rotation.z += THREE.MathUtils.degToRad(degrees); supportModelOnDisc(model); updateModelStats(); updatePlacementUI(); checkDiscFit(); selectModel(model); };
-    window.flipModel = function(axis) { if (!model) { setStatus("Primero importá un STL.", "warning"); return; } if (axis === "x") model.rotation.x += Math.PI; if (axis === "y") model.rotation.y += Math.PI; supportModelOnDisc(model); updateModelStats(); updatePlacementUI(); checkDiscFit(); selectModel(model); };
+    window.rotateModel = function(degrees) { if (!model) { setStatus("Primero importá un STL.", "warning"); return; } model.rotation.z += THREE.MathUtils.degToRad(degrees); updateModelStats(); updatePlacementUI(); checkDiscFit(); selectModel(model); };
+    window.flipModel = function(axis) { if (!model) { setStatus("Primero importá un STL.", "warning"); return; } if (axis === "x") model.rotation.x += Math.PI; if (axis === "y") model.rotation.y += Math.PI; updateModelStats(); updatePlacementUI(); checkDiscFit(); selectModel(model); };
     window.supportCurrentModel = function() { if (!model) { setStatus("Primero importá un STL.", "warning"); return; } supportModelOnDisc(model); updateModelStats(); updatePlacementUI(); checkDiscFit(); selectModel(model); setStatus("Pieza apoyada sobre la cara superior del disco.", "ok"); };
-    window.setModelZFromInput = function() { if (!model) return; supportModelOnDisc(model); updateModelStats(); updatePlacementUI(); checkDiscFit(); };
+    window.centerModelInThickness = function() { if (!model) { setStatus("Primero importá un STL.", "warning"); return; } model.updateMatrixWorld(true); const box = new THREE.Box3().setFromObject(model); const modelCenterZ = (box.min.z + box.max.z) / 2; model.position.z -= modelCenterZ; lockedZ = model.position.z; updateModelStats(); updatePlacementUI(); checkDiscFit(); selectModel(model); };
+    window.moveModelZ = function(delta) { if (!model) { setStatus("Primero importá un STL.", "warning"); return; } model.position.z += delta; lockedZ = model.position.z; updateModelStats(); updatePlacementUI(); checkDiscFit(); selectModel(model); };
+    window.setModelZFromInput = function() { if (!model) return; const value = Number(document.getElementById("posZ").value); if (!Number.isFinite(value)) return; model.position.z = value; lockedZ = model.position.z; updateModelStats(); updatePlacementUI(); checkDiscFit(); };
     window.centerModel = function() { if (!model) { setStatus("Primero importá un STL.", "warning"); return; } centerGeometry(model); selectModel(model); updateModelStats(); updatePlacementUI(); checkDiscFit(); };
-    window.clearModel = function() { removeCurrentModel(); loadedFileName = ""; modelStats = { size: { x: 0, y: 0, z: 0 }, triangles: 0 }; wireframe = false; document.getElementById("stlInput").value = ""; document.getElementById("sizeX").innerText = "-"; document.getElementById("sizeY").innerText = "-"; document.getElementById("sizeZ").innerText = "-"; document.getElementById("triangles").innerText = "-"; document.getElementById("discCheck").innerText = "-"; document.getElementById("discState").value = "-"; updatePlacementUI(); viewer.classList.remove("out-of-disc"); setStatus("Modelo eliminado.", "ok"); };
+    window.clearModel = function() { removeCurrentModel(); loadedFileName = ""; modelStats = { size: { x: 0, y: 0, z: 0 }, triangles: 0 }; wireframe = false; document.getElementById("stlInput").value = ""; document.getElementById("sizeX").innerText = "-"; document.getElementById("sizeY").innerText = "-"; document.getElementById("sizeZ").innerText = "-"; document.getElementById("triangles").innerText = "-"; document.getElementById("minZ").innerText = "-"; document.getElementById("maxZ").innerText = "-"; document.getElementById("discBottom").innerText = "-"; document.getElementById("discTop").innerText = "-"; document.getElementById("discCheck").innerText = "-"; document.getElementById("discState").value = "-"; updatePlacementUI(); viewer.classList.remove("out-of-disc"); setStatus("Modelo eliminado.", "ok"); };
     window.resetView = function() { camera.position.set(120, 120, 120); controls.target.set(0, 0, 0); controls.update(); };
     window.viewTop = function() { camera.position.set(0, 0, 170); controls.target.set(0, 0, 0); controls.update(); };
     window.viewFront = function() { camera.position.set(0, -170, 35); controls.target.set(0, 0, 0); controls.update(); };
@@ -391,7 +417,8 @@ functions.http("helloHttp", async (req, res) => {
         disc: { diameter: discDiameter, height: discHeight },
         material: document.getElementById("material").value,
         machine: document.getElementById("machine").value,
-        placement: { position: { x: Number(model.position.x.toFixed(3)), y: Number(model.position.y.toFixed(3)), z: Number(model.position.z.toFixed(3)) }, rotation: { x: Number(model.rotation.x.toFixed(6)), y: Number(model.rotation.y.toFixed(6)), z: Number(model.rotation.z.toFixed(6)) } }
+        placement: { position: { x: Number(model.position.x.toFixed(3)), y: Number(model.position.y.toFixed(3)), z: Number(model.position.z.toFixed(3)) }, rotation: { x: Number(model.rotation.x.toFixed(6)), y: Number(model.rotation.y.toFixed(6)), z: Number(model.rotation.z.toFixed(6)) } },
+        validation: { minZ: modelStats.box?.minZ ?? null, maxZ: modelStats.box?.maxZ ?? null, status: document.getElementById("discState").value }
       };
       const blob = new Blob([JSON.stringify(project, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -415,8 +442,8 @@ functions.http("helloHttp", async (req, res) => {
           const placement = project.placement || {}, position = placement.position || {}, rotation = placement.rotation || {};
           model.position.set(Number(position.x) || 0, Number(position.y) || 0, Number(position.z) || 0);
           model.rotation.set(Number(rotation.x) || 0, Number(rotation.y) || 0, Number(rotation.z) || 0);
-          supportModelOnDisc(model);
-          selectModel(model); updateModelStats(); updatePlacementUI(); checkDiscFit(); setStatus("Proyecto JSON cargado sobre el STL actual y apoyado sobre el disco.", "ok");
+          lockedZ = model.position.z;
+          selectModel(model); updateModelStats(); updatePlacementUI(); checkDiscFit(); setStatus("Proyecto JSON cargado sobre el STL actual.", "ok");
         } catch (err) { console.error(err); setStatus("Error al cargar el JSON del proyecto.", "error"); }
         finally { event.target.value = ""; }
       };
