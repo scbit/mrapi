@@ -4,6 +4,11 @@ let ctx = null;
 let camVisuals = null;
 let camSimulation = null;
 let camRuntimeStocks = null;
+let camViewState = {
+  showRapid: false,
+  showRemovedVoxels: false,
+  currentPreset: "simulation"
+};
 
 export function initCam(context) {
   ctx = context;
@@ -13,6 +18,7 @@ export function initCam(context) {
   camVisuals.heightmap = camVisuals.heightmap || [];
   camVisuals.tolerance = camVisuals.tolerance || [];
   camVisuals.voxelStock = camVisuals.voxelStock || null;
+  camVisuals.overcutWarning = camVisuals.overcutWarning || null;
   setupCamControls();
   exposeCamWindowFunctions();
 }
@@ -39,7 +45,7 @@ function setupCamControls() {
 
   const camPanel = ctx.document.querySelector(".panel.right .cam-only");
   if (camPanel && !ctx.document.getElementById("camHeightmapResolution")) {
-    camPanel.insertAdjacentHTML("afterbegin", '<label>Resolucion heightmap mm</label><input id="camHeightmapResolution" type="number" value="1.00" step="0.10" min="0.25" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="success" onclick="generateHeightmapForSelectedPart()">Generar heightmap</button><button class="secondary" onclick="showHeightmap()">Mostrar heightmap</button><button class="secondary" onclick="showRoughingTolerance()">Mostrar tolerancia desbaste</button><label>Resolucion voxel mm</label><input id="camVoxelSize" type="number" value="1.00" step="0.10" min="0.5" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="success" onclick="createVoxelStockForSelectedPart()">Crear stock voxel</button><button class="secondary" onclick="showVoxelStock()">Mostrar stock voxel</button><button class="secondary" onclick="simulateVoxelToolpath()">Simular desbaste voxel</button><button class="secondary" onclick="showMachinedVoxelStock()">Ver stock mecanizado</button><button class="secondary" onclick="resetVoxelStock()">Reset stock voxel</button>');
+    camPanel.insertAdjacentHTML("afterbegin", '<label>Vista CAM</label><button class="secondary" onclick="setCamViewPreset(\'design\')">Diseno objetivo</button><button class="secondary" onclick="setCamViewPreset(\'stock\')">Stock inicial</button><button class="secondary" onclick="setCamViewPreset(\'toolpath\')">Trayectoria</button><button class="secondary" onclick="setCamViewPreset(\'simulation\')">Simulacion</button><button class="secondary" onclick="setCamViewPreset(\'machined\')">Resultado mecanizado</button><label><input id="camShowRapidMoves" type="checkbox" onchange="toggleRapidMoves(this.checked)"> Mostrar rapid moves</label><button class="secondary" onclick="hideCamHelpers()">Ocultar ayudas CAM</button><label>Resolucion heightmap mm</label><input id="camHeightmapResolution" type="number" value="1.00" step="0.10" min="0.25" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="success" onclick="generateHeightmapForSelectedPart()">Generar heightmap</button><button class="secondary" onclick="showHeightmap()">Mostrar heightmap</button><button class="secondary" onclick="showRoughingTolerance()">Mostrar tolerancia desbaste</button><label>Resolucion voxel mm</label><input id="camVoxelSize" type="number" value="1.00" step="0.10" min="0.5" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="success" onclick="createVoxelStockForSelectedPart()">Crear stock voxel</button><button class="secondary" onclick="showVoxelStock()">Mostrar stock voxel</button><button class="secondary" onclick="simulateVoxelToolpath()">Simular desbaste voxel</button><button class="secondary" onclick="showMachinedVoxelStock()">Ver stock mecanizado</button><button class="secondary" onclick="resetVoxelStock()">Reset stock voxel</button>');
   }
 
   relabelCamButtons();
@@ -103,6 +109,9 @@ function exposeCamWindowFunctions() {
     simulateVoxelToolpath,
     resetVoxelStock,
     showMachinedVoxelStock,
+    setCamViewPreset,
+    toggleRapidMoves,
+    hideCamHelpers,
     generateDemoToolpath,
     startCamSimulation,
     pauseCamSimulation,
@@ -813,13 +822,15 @@ function updateVoxelStockVisual(showRemoved) {
   const stock = cam.voxelStock;
   hideVoxelStock();
   if (!stock) return;
+  const includeRemoved = showRemoved !== undefined ? showRemoved : camViewState.showRemovedVoxels;
   const group = new ctx.THREE.Group();
   group.userData.camVisual = true;
-  addVoxelInstances(group, stock.voxels.filter(v => v.occupied && !v.protected), stock.voxelSize, 0xd1d5db, 0.34, 5200);
-  addVoxelInstances(group, stock.voxels.filter(v => v.occupied && v.protected), stock.voxelSize, 0x38bdf8, 0.18, 1800);
-  if (showRemoved) addVoxelInstances(group, stock.voxels.filter(v => v.removed), stock.voxelSize, 0xf97316, 0.26, 2400);
+  addVoxelInstances(group, stock.voxels.filter(v => v.occupied && !v.protected), stock.voxelSize, 0xd1d5db, 0.22, 5200);
+  addVoxelInstances(group, stock.voxels.filter(v => v.occupied && v.protected), stock.voxelSize, 0x38bdf8, 0.30, 1800);
+  if (includeRemoved) addVoxelInstances(group, stock.voxels.filter(v => v.removed), stock.voxelSize, 0xf97316, 0.40, 1800);
   ctx.scene.add(group);
   camVisuals.voxelStock = group;
+  updateOvercutWarningVisual(stock);
   applyCamVisibility();
 }
 
@@ -850,24 +861,41 @@ function removeVoxelsByToolAtPoint(point, tool) {
   const p = vector(point);
   let removed = 0;
   let overcut = false;
+  const overcutPoints = [];
   stock.voxels.forEach(voxel => {
     if (!voxel.occupied) return;
     const insideTool = isBallTool(tool) ? isVoxelInsideBallTool(voxel, p, tool) : isVoxelInsideFlatTool(voxel, p, tool, params.stepDown, stock.voxelSize);
     if (!insideTool) return;
     if (voxel.protected) {
       overcut = true;
+      if (overcutPoints.length < 80) overcutPoints.push(new ctx.THREE.Vector3(voxel.x, voxel.y, voxel.z));
       return;
     }
     voxel.occupied = false;
     voxel.removed = true;
     removed += 1;
   });
-  if (overcut) stock.possibleOvercut = true;
+  if (overcut) {
+    stock.possibleOvercut = true;
+    stock.overcutPoints = (stock.overcutPoints || []).concat(overcutPoints).slice(-160);
+  }
   stock.removedVoxels += removed;
   stock.remainingVoxels = stock.voxels.filter(v => v.occupied).length;
   cam.analysis.possibleOvercut = cam.analysis.possibleOvercut || overcut;
   updateVoxelInfoForPart(ctx.selectedModel);
+  if (overcut) updateOvercutWarningVisual(stock);
   return removed;
+}
+
+function updateOvercutWarningVisual(stock) {
+  removeCamObject(camVisuals.overcutWarning);
+  camVisuals.overcutWarning = null;
+  if (!stock || !stock.possibleOvercut || !stock.overcutPoints || !stock.overcutPoints.length) return;
+  const group = new ctx.THREE.Group();
+  group.userData.camVisual = true;
+  createMarkerCloud(stock.overcutPoints, Math.max(stock.voxelSize * 0.42, 0.18), 0xef4444, 0.95, null, group);
+  ctx.scene.add(group);
+  camVisuals.overcutWarning = group;
 }
 
 function isBallTool(tool) {
@@ -910,11 +938,66 @@ function resetVoxelStock() {
 function showMachinedVoxelStock(silent) {
   if (!ctx.requireModel()) return;
   if (!ensureCam(ctx.selectedModel).voxelStock) createVoxelStockForPart(ctx.selectedModel);
+  camViewState.showRemovedVoxels = true;
   updateVoxelStockVisual(true);
   showDesignTarget(true);
+  setCamViewPreset("machined", true);
   updateCamPanel();
   const stock = ensureCam(ctx.selectedModel).voxelStock;
   if (!silent) ctx.setStatus(stock.possibleOvercut ? "Stock mecanizado visible con advertencia de sobrecorte." : "Stock mecanizado voxel visible.", stock.possibleOvercut ? "warning" : "ok");
+}
+
+function setCamViewPreset(preset, silent) {
+  camViewState.currentPreset = preset;
+  const showStock = preset === "stock" || preset === "simulation" || preset === "machined";
+  const showToolpath = preset === "toolpath" || preset === "simulation";
+  const showTool = preset === "simulation";
+  camViewState.showRemovedVoxels = preset === "machined";
+
+  if (ctx.selectedModel) {
+    showDesignTarget(true);
+    ctx.selectedModel.mesh.material.opacity = preset === "stock" || preset === "machined" ? 0.24 : 0.42;
+    ctx.selectedModel.mesh.material.wireframe = preset === "machined";
+  }
+  if (camVisuals.voxelStock) camVisuals.voxelStock.visible = showStock;
+  if (showStock && ctx.selectedModel && ensureCam(ctx.selectedModel).voxelStock) updateVoxelStockVisual(camViewState.showRemovedVoxels);
+  camVisuals.toolpaths.forEach(obj => obj.visible = showToolpath);
+  camVisuals.removed.forEach(obj => obj.visible = preset === "simulation");
+  camVisuals.heightmap.forEach(obj => obj.visible = false);
+  camVisuals.tolerance.forEach(obj => obj.visible = false);
+  if (camVisuals.machined) camVisuals.machined.visible = preset === "machined";
+  if (camVisuals.tool) camVisuals.tool.visible = showTool;
+  if (camVisuals.overcutWarning) camVisuals.overcutWarning.visible = true;
+  applyToolpathMoveVisibility();
+  if (!silent) ctx.setStatus(`Vista CAM: ${preset}`, "ok");
+}
+
+function toggleRapidMoves(show) {
+  camViewState.showRapid = !!show;
+  const input = ctx.document.getElementById("camShowRapidMoves");
+  if (input) input.checked = camViewState.showRapid;
+  applyToolpathMoveVisibility();
+}
+
+function hideCamHelpers() {
+  clearHeightmapVisuals();
+  camViewState.showRapid = false;
+  const input = ctx.document.getElementById("camShowRapidMoves");
+  if (input) input.checked = false;
+  applyToolpathMoveVisibility();
+  camVisuals.overcut.forEach(obj => obj.visible = false);
+  if (camVisuals.comparison) camVisuals.comparison.visible = false;
+  ctx.setStatus("Ayudas CAM ocultas. Se conserva el STL y el stock/resultados visibles.", "ok");
+}
+
+function applyToolpathMoveVisibility() {
+  camVisuals.toolpaths.forEach(root => {
+    if (!root.traverse) return;
+    root.traverse(child => {
+      if (child.userData && child.userData.moveType === "rapid") child.visible = camViewState.showRapid;
+      if (child.userData && child.userData.moveType === "cut") child.visible = root.visible !== false;
+    });
+  });
 }
 
 function updateVoxelInfoForPart(part) {
@@ -932,7 +1015,7 @@ function updateVoxelInfoForPart(part) {
   cam.analysis.voxelSize = stock.voxelSize;
   cam.analysis.coverageDemo = stock.totalVoxels ? stock.removedVoxels / stock.totalVoxels * 100 : cam.analysis.coverageDemo;
   cam.analysis.possibleOvercut = cam.analysis.possibleOvercut || stock.possibleOvercut;
-  cam.analysis.status = stock.possibleOvercut ? "Posible sobrecorte voxel detectado." : `Stock voxel: ${stock.remainingVoxels} remanentes / ${stock.removedVoxels} removidos.`;
+  cam.analysis.status = stock.possibleOvercut ? "ALERTA: trayectoria toca zona protegida del STL" : `Stock voxel: ${stock.remainingVoxels} remanentes / ${stock.removedVoxels} removidos.`;
   return cam.voxelInfo;
 }
 
@@ -944,7 +1027,9 @@ function updateVoxelMetrics() {
   setCamText("camRemovedCount", `${info.remainingVoxels} remanentes / ${info.protectedVoxels} protegidos`);
   setCamText("camOvercut", info.possibleOvercut ? "Si - voxel protegido tocado" : "No detectado");
   setCamText("camRemaining", `Voxel ${info.voxelSize.toFixed(2)} mm Â· cobertura ${info.coverageDemo.toFixed(1)}%`);
-  setCamText("camComparisonStatus", info.status || "Stock voxel listo");
+  setCamText("camStatus", info.possibleOvercut ? "Trayectoria invalida: sobrecorte detectado" : `Voxel CAM: ${info.totalVoxels} total / ${info.removedVoxels} removidos`);
+  setCamText("camComparisonStatus", info.possibleOvercut ? "ALERTA: trayectoria toca zona protegida del STL" : info.status || "Stock voxel listo");
+  setCamText("camConceptNote", info.possibleOvercut ? "ALERTA: trayectoria toca zona protegida del STL. Revisar altura Z, stock to leave o estrategia." : "Voxel CAM: gris remanente, naranja removido, celeste protegido.");
 }
 
 function serializeVoxelInfoForPart(part) {
@@ -957,6 +1042,7 @@ function serializeVoxelInfoForPart(part) {
     remainingVoxels: stock.remainingVoxels,
     protectedVoxels: stock.protectedVoxels,
     possibleOvercut: !!stock.possibleOvercut,
+    overcutWarningCount: stock.overcutPoints ? stock.overcutPoints.length : 0,
     coverageDemo: stock.totalVoxels ? Number((stock.removedVoxels / stock.totalVoxels * 100).toFixed(1)) : 0,
     bounds: stock.bounds,
     generatedAt: stock.generatedAt,
@@ -1181,6 +1267,7 @@ function drawCuttingSegments(segments, parent, overcut) {
     const geometry = new ctx.THREE.BufferGeometry().setFromPoints(segment.map(vector));
     const line = new ctx.THREE.Line(geometry, material);
     line.userData.camVisual = true;
+    line.userData.moveType = "cut";
     parent.add(line);
   });
 }
@@ -1192,6 +1279,8 @@ function drawRapidSegments(segments, parent) {
     const line = new ctx.THREE.Line(geometry, material);
     line.computeLineDistances();
     line.userData.camVisual = true;
+    line.userData.moveType = "rapid";
+    line.visible = camViewState.showRapid;
     parent.add(line);
   });
 }
@@ -1403,7 +1492,7 @@ export function stepCamAnimation() {
 
 function addRemovedMaterialMarker(point, tool) {
   const mesh = new ctx.THREE.Mesh(
-    new ctx.THREE.SphereGeometry(Math.max(tool.diameter / 2, 0.25), 12, 8),
+    new ctx.THREE.SphereGeometry(Math.max(tool.diameter * 0.22, 0.12), 10, 6),
     new ctx.THREE.MeshStandardMaterial({ color: 0xf97316, transparent: true, opacity: 0.38, depthWrite: false })
   );
   mesh.position.copy(vector(point));
@@ -1518,11 +1607,13 @@ function clearCamVisualObjects(resetTool) {
   removeCamObject(camVisuals.comparison);
   removeCamObject(camVisuals.stock);
   removeCamObject(camVisuals.voxelStock);
+  removeCamObject(camVisuals.overcutWarning);
   camVisuals.tool = null;
   camVisuals.machined = null;
   camVisuals.comparison = null;
   camVisuals.stock = null;
   camVisuals.voxelStock = null;
+  camVisuals.overcutWarning = null;
   if (resetTool !== false) {
     camSimulation.isRunning = false;
     camSimulation.isPaused = false;
@@ -1569,6 +1660,8 @@ function applyCamVisibility() {
   if (camVisuals.machined) camVisuals.machined.visible = ctx.camVisibility.machined;
   if (camVisuals.comparison) camVisuals.comparison.visible = ctx.camVisibility.comparison;
   if (camVisuals.voxelStock) camVisuals.voxelStock.visible = ctx.camVisibility.stock || ctx.camVisibility.machined;
+  if (camVisuals.overcutWarning) camVisuals.overcutWarning.visible = true;
+  applyToolpathMoveVisibility();
 }
 
 function markOvercutPoints(path) {
