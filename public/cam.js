@@ -913,15 +913,12 @@ function createVoxelStockForSelectedPart() {
   const stock = createVoxelStockForPart(ctx.selectedModel);
   showVoxelStock(true);
   updateCamPanel();
-  ctx.setStatus(`Stock voxel creado: ${stock.totalVoxels} voxels, ${stock.protectedVoxels} protegidos.`, stock.resolutionAdjusted ? "warning" : "ok");
+  ctx.setStatus(`Disco voxel creado: ${stock.totalVoxels} voxels, ${stock.protectedVoxels} protegidos por piezas/soportes.`, stock.resolutionAdjusted ? "warning" : "ok");
   return stock;
 }
 
 function createVoxelStockForPart(part) {
   const cam = ensureCam(part);
-  const params = getCamParameters();
-  const heightmap = cam.heightmap || generateHeightmapForPart(part);
-  computeProtectedHeightmap(heightmap, params.stockToLeave);
   let voxelSize = voxelSizeInput();
   const maxVoxels = 10000;
   const discRadius = ctx.discDiameter / 2;
@@ -996,22 +993,75 @@ function voxelDimensions(bounds, voxelSize) {
   return { nx, ny, nz, total: nx * ny * nz };
 }
 
+function protectedGeometryTargets() {
+  const params = getCamParameters();
+  return ctx.models
+    .filter(model => model && model.mesh)
+    .map(model => {
+      const heightmap = generateHeightmapForPart(model);
+      computeProtectedHeightmap(heightmap, params.stockToLeave);
+      return {
+        model,
+        heightmap,
+        supports: Array.isArray(model.supports) ? model.supports : []
+      };
+    });
+}
+
 function classifyProtectedVoxels(part) {
   const cam = ensureCam(part);
   const stock = cam.voxelStock;
   if (!stock) return null;
-  const params = getCamParameters();
-  const heightmap = cam.heightmap || generateHeightmapForPart(part);
-  computeProtectedHeightmap(heightmap, params.stockToLeave);
+  const targets = protectedGeometryTargets();
   let protectedVoxels = 0;
   stock.voxels.forEach(voxel => {
-    const cell = getNearestHeightmapCell(heightmap, voxel.x, voxel.y);
-    voxel.protected = !!(cell && cell.hasSurface && voxel.z <= cell.protectedZ);
+    voxel.protected = isVoxelProtectedByTargets(voxel, targets, stock.voxelSize);
     if (voxel.protected) protectedVoxels += 1;
   });
   stock.protectedVoxels = protectedVoxels;
+  stock.protectedScope = "all_nested_parts_and_supports";
+  stock.protectedPartCount = targets.length;
+  stock.protectedSupportCount = targets.reduce((count, target) => count + target.supports.length, 0);
   updateVoxelInfoForPart(part);
   return stock;
+}
+
+function isVoxelProtectedByTargets(voxel, targets, voxelSize) {
+  return targets.some(target => {
+    const cell = getNearestHeightmapCell(target.heightmap, voxel.x, voxel.y);
+    if (cell && cell.hasSurface && voxel.z <= cell.protectedZ) return true;
+    return target.supports.some(support => isVoxelInsideSupportEnvelope(voxel, support, voxelSize));
+  });
+}
+
+function isVoxelInsideSupportEnvelope(voxel, support, voxelSize) {
+  if (!support) return false;
+  const point = new ctx.THREE.Vector3(voxel.x, voxel.y, voxel.z);
+  const start = support.startPoint ? vector(support.startPoint) : null;
+  let end = support.endPoint ? vector(support.endPoint) : null;
+  const direction = support.direction ? vector(support.direction) : null;
+  const length = Number(support.length) || 0;
+  if (!end && start && direction && length > 0) end = start.clone().add(direction.normalize().multiplyScalar(length));
+  if (start && end) {
+    const radius = Math.max((Number(support.diameter) || 2) / 2, voxelSize * 0.55);
+    return distancePointToSegment(point, start, end) <= radius + voxelSize * 0.5;
+  }
+  if (support.mesh) {
+    support.mesh.updateMatrixWorld(true);
+    const box = new ctx.THREE.Box3().setFromObject(support.mesh);
+    box.expandByScalar(voxelSize * 0.5);
+    return box.containsPoint(point);
+  }
+  return false;
+}
+
+function distancePointToSegment(point, start, end) {
+  const segment = new ctx.THREE.Vector3().subVectors(end, start);
+  const lengthSq = segment.lengthSq();
+  if (!lengthSq) return point.distanceTo(start);
+  const t = Math.max(0, Math.min(1, new ctx.THREE.Vector3().subVectors(point, start).dot(segment) / lengthSq));
+  const closest = start.clone().add(segment.multiplyScalar(t));
+  return point.distanceTo(closest);
 }
 
 function showVoxelStock(silent) {
@@ -1387,9 +1437,12 @@ function serializeVoxelInfoForPart(part) {
     bounds: stock.bounds,
     generatedAt: stock.generatedAt,
     stockType: "dental_disc",
+    protectedScope: stock.protectedScope || "all_nested_parts_and_supports",
+    protectedPartCount: stock.protectedPartCount || 0,
+    protectedSupportCount: stock.protectedSupportCount || 0,
     discDiameter: ctx.discDiameter,
     discHeight: ctx.discHeight,
-    status: stock.resolutionAdjusted ? "Resolucion voxel ajustada para representar el disco completo." : "Stock voxel del disco dental listo."
+    status: stock.resolutionAdjusted ? "Resolucion voxel ajustada para representar el disco completo." : "Stock voxel del disco dental listo con piezas y soportes protegidos."
   };
 }
 
