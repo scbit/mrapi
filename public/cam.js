@@ -1129,7 +1129,8 @@ function updateVoxelStockVisual(showRemoved) {
   const hasMachining = stock.voxels.some(v => v.removed);
   const lineMode = camViewState.stockRenderMode === "lines";
   if (hasMachining) {
-    addVoxelSurfaceMesh(group, stock.voxels.filter(v => v.occupied), stock, 0xd1d5db, lineMode ? 0.42 : 0.92, lineMode);
+    const resultOpacity = camViewState.currentPreset === "machined" && !lineMode ? 1 : 0.92;
+    addVoxelSurfaceMesh(group, stock.voxels.filter(v => v.occupied), stock, 0xd1d5db, lineMode ? 0.42 : resultOpacity, lineMode);
   } else {
     addSmoothDiscStockMesh(group, stock, 0xd1d5db, lineMode ? 0.28 : 0.86, lineMode);
   }
@@ -1176,7 +1177,6 @@ function addVoxelSurfaceMesh(parent, voxels, stock, color, opacity, lineMode) {
   const normals = [];
   const indices = [];
   const half = stock.voxelSize / 2;
-  const openTopForResult = camViewState.currentPreset === "machined" && !lineMode;
   const faces = [
     { d: [1, 0, 0], n: [1, 0, 0], c: [[half, -half, -half], [half, half, -half], [half, half, half], [half, -half, half]] },
     { d: [-1, 0, 0], n: [-1, 0, 0], c: [[-half, half, -half], [-half, -half, -half], [-half, -half, half], [-half, half, half]] },
@@ -1187,7 +1187,6 @@ function addVoxelSurfaceMesh(parent, voxels, stock, color, opacity, lineMode) {
   ];
   voxels.forEach(voxel => {
     faces.forEach(face => {
-      if (openTopForResult && face.n[2] > 0) return;
       const neighbor = `${voxel.ix + face.d[0]}:${voxel.iy + face.d[1]}:${voxel.iz + face.d[2]}`;
       if (voxelSet.has(neighbor)) return;
       const base = positions.length / 3;
