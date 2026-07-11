@@ -322,14 +322,6 @@ export function updateCamPanel() {
   renderCamOperationList();
 }
 
-function ensureDentalOperations(model) {
-  const cam = ensureCam(model);
-  if (!cam.operations.length) {
-    cam.operations.push(createDentalOperation("Desbaste", "roughing", "flat_2_0"));
-  }
-  return cam.operations;
-}
-
 function createDentalOperation(name, strategyId, toolId) {
   return {
     id: `operation_${camOperationCounter++}`,
@@ -341,28 +333,6 @@ function createDentalOperation(name, strategyId, toolId) {
     possibleOvercut: false,
     createdAt: new Date().toISOString()
   };
-}
-
-function renderCamOperationList() {
-  const list = ctx.document.getElementById("camOperationList");
-  if (!list) return;
-  if (!ctx.selectedModel) {
-    list.innerHTML = '<div class="empty-list">Importa y selecciona una pieza.</div>';
-    return;
-  }
-  const operations = ensureDentalOperations(ctx.selectedModel);
-  list.innerHTML = operations.map((operation, index) => {
-    const tool = findTool(operation.toolId);
-    const strategy = findStrategy(operation.strategyId);
-    const statusClass = operation.possibleOvercut ? "bad" : operation.status === "Aplicada" ? "ok" : "";
-    return `<div class="cam-operation ${statusClass}"><div><b>${index + 1}. ${operation.name}</b><span>${tool.name} · ${strategy.name}</span></div><strong>${operation.status}</strong></div>`;
-  }).join("");
-}
-
-function activeDentalOperation() {
-  if (!ctx.selectedModel) return null;
-  const operations = ensureDentalOperations(ctx.selectedModel);
-  return operations.find(operation => operation.status !== "Aplicada") || operations[operations.length - 1];
 }
 
 function applyOperationSettings(operation) {
@@ -385,25 +355,6 @@ function prepareDentalCamStock() {
   ctx.setStatus("Stock preparado. Elegi herramienta/operacion y presiona Desbastar stock.", "ok");
 }
 
-function runDentalRoughingOperation() {
-  if (!ctx.requireModel()) return;
-  const operation = activeDentalOperation();
-  applyOperationSettings(operation);
-  if (!ensureCam(ctx.selectedModel).voxelStock) prepareDentalCamStock();
-  generateDemoToolpath();
-  const path = selectedToolpath();
-  if (!path) return;
-  operation.status = "Aplicando";
-  renderCamOperationList();
-  const result = applyToolpathToVoxelStock(path);
-  operation.status = result.possibleOvercut ? "Revisar" : "Aplicada";
-  operation.removedVoxels = result.removedVoxels;
-  operation.possibleOvercut = result.possibleOvercut;
-  showMachinedVoxelStock(true);
-  renderCamOperationList();
-  ctx.setStatus(result.possibleOvercut ? "Operacion aplicada con alerta: posible sobrecorte." : `Operacion aplicada: ${result.removedVoxels} voxels removidos.`, result.possibleOvercut ? "warning" : "ok");
-}
-
 function applyToolpathToVoxelStock(path) {
   const cam = ensureCam(ctx.selectedModel);
   const stock = cam.voxelStock || createVoxelStockForPart(ctx.selectedModel);
@@ -422,31 +373,6 @@ function applyToolpathToVoxelStock(path) {
     removedVoxels: Math.max(0, stock.removedVoxels - before),
     possibleOvercut: !!stock.possibleOvercut
   };
-}
-
-function simulateCurrentDentalOperation() {
-  if (!ctx.requireModel()) return;
-  const operation = activeDentalOperation();
-  applyOperationSettings(operation);
-  if (!selectedToolpath()) generateDemoToolpath();
-  if (!ensureCam(ctx.selectedModel).voxelStock) createVoxelStockForPart(ctx.selectedModel);
-  setCamViewPreset("simulation", true);
-  startCamSimulation();
-}
-
-function addDentalOperation() {
-  if (!ctx.requireModel()) return;
-  const cam = ensureCam(ctx.selectedModel);
-  const existing = ensureDentalOperations(ctx.selectedModel);
-  const next = existing.length;
-  const presets = [
-    createDentalOperation("Desbaste", "roughing", "flat_2_0"),
-    createDentalOperation("Semiacabado", "roughing", "flat_1_0"),
-    createDentalOperation("Acabado", "finishing", "ball_0_6"),
-    createDentalOperation("Detalle", "finishing", "ball_0_3")
-  ];
-  cam.operations.push(presets[Math.min(next, presets.length - 1)]);
-  renderCamOperationList();
 }
 
 function toggleCamAdvancedPanel() {
