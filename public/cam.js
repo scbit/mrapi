@@ -352,7 +352,7 @@ function prepareDentalCamStock() {
   showVoxelStock(true);
   setCamViewPreset("stock", true);
   renderCamOperationList();
-  ctx.setStatus("Stock preparado. Elegi herramienta/operacion y presiona Desbastar stock.", "ok");
+  ctx.setStatus("Disco dental preparado como stock. Elegi herramienta/operacion y presiona Desbastar stock.", "ok");
 }
 
 function applyToolpathToVoxelStock(path) {
@@ -922,23 +922,20 @@ function createVoxelStockForPart(part) {
   const params = getCamParameters();
   const heightmap = cam.heightmap || generateHeightmapForPart(part);
   computeProtectedHeightmap(heightmap, params.stockToLeave);
-  part.mesh.updateMatrixWorld(true);
-  const box = new ctx.THREE.Box3().setFromObject(part.mesh);
   let voxelSize = voxelSizeInput();
-  const marginXY = 4;
-  const marginZ = 4;
   const maxVoxels = 10000;
+  const discRadius = ctx.discDiameter / 2;
   const bounds = {
-    minX: Number((box.min.x - marginXY).toFixed(3)),
-    maxX: Number((box.max.x + marginXY).toFixed(3)),
-    minY: Number((box.min.y - marginXY).toFixed(3)),
-    maxY: Number((box.max.y + marginXY).toFixed(3)),
-    minZ: Number((Math.max(-ctx.discHeight / 2, box.min.z - marginZ)).toFixed(3)),
-    maxZ: Number((Math.min(ctx.discHeight / 2, box.max.z + marginZ)).toFixed(3))
+    minX: Number((-discRadius).toFixed(3)),
+    maxX: Number(discRadius.toFixed(3)),
+    minY: Number((-discRadius).toFixed(3)),
+    maxY: Number(discRadius.toFixed(3)),
+    minZ: Number((-ctx.discHeight / 2).toFixed(3)),
+    maxZ: Number((ctx.discHeight / 2).toFixed(3))
   };
   let dims = voxelDimensions(bounds, voxelSize);
   let resolutionAdjusted = false;
-  while (dims.total > maxVoxels) {
+  while (estimateDiscVoxelCount(discRadius, ctx.discHeight, voxelSize) > maxVoxels) {
     voxelSize = Number((voxelSize + 0.25).toFixed(2));
     dims = voxelDimensions(bounds, voxelSize);
     resolutionAdjusted = true;
@@ -952,6 +949,7 @@ function createVoxelStockForPart(part) {
       const y = bounds.minY + iy * voxelSize + voxelSize / 2;
       for (let ix = 0; ix < dims.nx; ix += 1) {
         const x = bounds.minX + ix * voxelSize + voxelSize / 2;
+        if (Math.sqrt(x * x + y * y) > discRadius) continue;
         voxels.push({
           id,
           ix,
@@ -987,6 +985,10 @@ function createVoxelStockForPart(part) {
   return cam.voxelStock;
 }
 
+function estimateDiscVoxelCount(radius, height, voxelSize) {
+  return Math.ceil((Math.PI * radius * radius * height) / (voxelSize ** 3));
+}
+
 function voxelDimensions(bounds, voxelSize) {
   const nx = Math.max(1, Math.ceil((bounds.maxX - bounds.minX) / voxelSize));
   const ny = Math.max(1, Math.ceil((bounds.maxY - bounds.minY) / voxelSize));
@@ -1018,7 +1020,7 @@ function showVoxelStock(silent) {
   if (!cam.voxelStock) createVoxelStockForPart(ctx.selectedModel);
   updateVoxelStockVisual();
   showDesignTarget(true);
-  if (!silent) ctx.setStatus("Stock voxel visible: gris remanente, naranja removido, celeste protegido.", "ok");
+  if (!silent) ctx.setStatus("Disco voxel visible: gris remanente, naranja removido, celeste protegido.", "ok");
 }
 
 function hideVoxelStock() {
@@ -1384,7 +1386,10 @@ function serializeVoxelInfoForPart(part) {
     coverageDemo: stock.totalVoxels ? Number((stock.removedVoxels / stock.totalVoxels * 100).toFixed(1)) : 0,
     bounds: stock.bounds,
     generatedAt: stock.generatedAt,
-    status: stock.resolutionAdjusted ? "Resolucion voxel ajustada para rendimiento." : "Stock voxel local listo."
+    stockType: "dental_disc",
+    discDiameter: ctx.discDiameter,
+    discHeight: ctx.discHeight,
+    status: stock.resolutionAdjusted ? "Resolucion voxel ajustada para representar el disco completo." : "Stock voxel del disco dental listo."
   };
 }
 
