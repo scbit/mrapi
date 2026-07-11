@@ -1,20 +1,9 @@
+import { MATERIALS, TOOLS, MACHINES, STRATEGIES, findMaterial, findTool, findMachine, findStrategy } from "./camConfig.js";
+
 let ctx = null;
 let camVisuals = null;
 let camSimulation = null;
 let camRuntimeStocks = null;
-
-const CAM_DEFAULTS = {
-  roughing: { strategy: "Desbaste", tolerance: 0.5, stepDown: 1.5, stepOverFactor: 0.7 },
-  finishing: { strategy: "Acabado", tolerance: 0.05, stepDown: 0.3, stepOverFactor: 0.2 }
-};
-
-const TOOL_DEFINITIONS = {
-  "flat-2.0": { id: "flat-2.0", label: "Fresa plana 2.0 mm", type: "flat", diameter: 2 },
-  "flat-1.0": { id: "flat-1.0", label: "Fresa plana 1.0 mm", type: "flat", diameter: 1 },
-  "ball-1.0": { id: "ball-1.0", label: "Fresa esferica 1.0 mm", type: "ball", diameter: 1 },
-  "ball-0.6": { id: "ball-0.6", label: "Fresa esferica 0.6 mm", type: "ball", diameter: 0.6 },
-  "ball-0.3": { id: "ball-0.3", label: "Fresa esferica 0.3 mm", type: "ball", diameter: 0.3 }
-};
 
 export function initCam(context) {
   ctx = context;
@@ -26,26 +15,45 @@ export function initCam(context) {
 }
 
 function setupCamControls() {
+  populateMainMaterialAndMachineSelectors();
   const strategy = ctx.document.getElementById("camStrategy");
   if (strategy) {
-    strategy.innerHTML = '<option>Desbaste</option><option>Acabado</option><option>Corte soportes demo</option>';
-    strategy.value = "Desbaste";
+    strategy.innerHTML = STRATEGIES.map(item => `<option value="${item.id}">${item.name}</option>`).join("");
+    strategy.value = "roughing";
     strategy.onchange = () => applyStrategyDefaults(true);
   }
 
   const tool = ctx.document.getElementById("camTool");
   if (tool) {
-    tool.innerHTML = Object.values(TOOL_DEFINITIONS).map(item => `<option value="${item.id}">${item.label}</option>`).join("");
-    tool.value = "flat-2.0";
-    tool.onchange = () => applyStrategyDefaults(false);
+    tool.innerHTML = TOOLS.map(item => `<option value="${item.id}">${item.name}</option>`).join("");
+    tool.value = "flat_2_0";
+    tool.onchange = () => updateDerivedCamInputs();
   }
 
   if (strategy && !ctx.document.getElementById("camTolerance")) {
-    strategy.insertAdjacentHTML("afterend", '<label>Tolerancia mm</label><input id="camTolerance" type="number" value="0.50" step="0.01" min="0" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>StepOver mm</label><input id="camStepOver" type="number" value="1.40" step="0.05" min="0.05" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>StepDown mm</label><input id="camStepDown" type="number" value="1.50" step="0.05" min="0.05" onchange="updateCamPanel()" oninput="updateCamPanel()"/>');
+    strategy.insertAdjacentHTML("afterend", '<label>Tolerancia mm</label><input id="camTolerance" type="number" value="0.50" step="0.01" min="0" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>StepOver %</label><input id="camStepOverPercent" type="number" value="70" step="1" min="1" max="100" onchange="updateDerivedCamInputs()" oninput="updateDerivedCamInputs()"/><label>StepOver mm</label><input id="camStepOver" type="number" value="1.40" step="0.05" min="0.05" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>StepDown mm</label><input id="camStepDown" type="number" value="1.50" step="0.05" min="0.05" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>RPM</label><input id="camRpm" type="number" value="28000" step="500" min="1000" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>Feed rate mm/min</label><input id="camFeedRate" type="number" value="800" step="10" min="1" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>Stock to leave mm</label><input id="camStockToLeave" type="number" value="0.50" step="0.01" min="0" onchange="updateCamPanel()" oninput="updateCamPanel()"/><div class="info-card" id="camDemoNotice">CAM demo visual: todavia no calcula mecanizado real. Las trayectorias actuales son aproximadas. El motor real se implementara con heightmap/voxel.</div>');
   }
 
   relabelCamButtons();
   applyStrategyDefaults(true);
+}
+
+function populateMainMaterialAndMachineSelectors() {
+  const material = ctx.document.getElementById("material");
+  if (material) {
+    const current = material.value;
+    material.innerHTML = MATERIALS.map(item => `<option value="${item.id}">${item.name}</option>`).join("");
+    material.value = findMaterial(current).id;
+    material.onchange = () => applyStrategyDefaults(false);
+  }
+
+  const machine = ctx.document.getElementById("machine");
+  if (machine) {
+    const current = machine.value;
+    machine.innerHTML = MACHINES.map(item => `<option value="${item.id}">${item.name}</option>`).join("");
+    machine.value = findMachine(current).id;
+    machine.onchange = () => updateCamPanel();
+  }
 }
 
 function relabelCamButtons() {
@@ -84,7 +92,10 @@ function exposeCamWindowFunctions() {
     compareMachinedResultToDesignDemo: compareApproxMachinedStockToDesign,
     compareResultToDesignDemo: compareApproxMachinedStockToDesign,
     generateMachinedResultDemo: showToleranceOffsetDemo,
-    generateFinalResultDemo: showToleranceOffsetDemo
+    generateFinalResultDemo: showToleranceOffsetDemo,
+    updateDerivedCamInputs,
+    getCamSettings,
+    applyCamSettings
   });
 }
 
@@ -100,35 +111,52 @@ function textInput(id, fallback) {
 }
 
 function getToolDefinition() {
-  const selected = textInput("camTool", "flat-2.0");
-  return TOOL_DEFINITIONS[selected] || TOOL_DEFINITIONS["flat-2.0"];
+  return findTool(textInput("camTool", "flat_2_0"));
 }
 
 function getCamParameters() {
-  const strategy = textInput("camStrategy", "Desbaste");
+  const strategy = findStrategy(textInput("camStrategy", "roughing"));
   const tool = getToolDefinition();
-  const defaults = strategy === "Acabado" ? CAM_DEFAULTS.finishing : CAM_DEFAULTS.roughing;
   return {
-    strategy,
+    strategy: strategy.name,
+    strategyId: strategy.id,
     tool,
-    tolerance: numberInput("camTolerance", defaults.tolerance),
-    stepOver: numberInput("camStepOver", tool.diameter * defaults.stepOverFactor),
-    stepDown: numberInput("camStepDown", defaults.stepDown),
+    material: findMaterial(textInput("material", "zirconia")),
+    machine: findMachine(textInput("machine", "dental_4x_demo")),
+    tolerance: numberInput("camTolerance", strategy.tolerance),
+    stepOverPercent: numberInput("camStepOverPercent", strategy.stepOverPercent),
+    stepOver: numberInput("camStepOver", tool.diameter * strategy.stepOverPercent / 100),
+    stepDown: numberInput("camStepDown", strategy.stepDown),
+    rpm: numberInput("camRpm", tool.defaultRpm),
+    feedRate: numberInput("camFeedRate", strategy.id === "finishing" ? findMaterial(textInput("material", "zirconia")).finishingFeed : findMaterial(textInput("material", "zirconia")).roughingFeed),
+    stockToLeave: numberInput("camStockToLeave", strategy.stockToLeave || strategy.tolerance),
     protectedMethod: "bbox_or_ellipse_demo"
   };
 }
 
 function applyStrategyDefaults(forceTool) {
-  const strategy = textInput("camStrategy", "Desbaste");
-  const finishing = strategy === "Acabado";
+  const strategy = findStrategy(textInput("camStrategy", "roughing"));
   const tool = ctx.document.getElementById("camTool");
-  if (tool && forceTool) tool.value = finishing ? "ball-1.0" : "flat-2.0";
+  if (tool && forceTool) tool.value = strategy.defaultTool;
 
   const definition = getToolDefinition();
-  const defaults = finishing ? CAM_DEFAULTS.finishing : CAM_DEFAULTS.roughing;
-  setInputValue("camTolerance", defaults.tolerance.toFixed(2));
-  setInputValue("camStepOver", (definition.diameter * defaults.stepOverFactor).toFixed(2));
-  setInputValue("camStepDown", defaults.stepDown.toFixed(2));
+  const material = findMaterial(textInput("material", "zirconia"));
+  const feed = strategy.id === "finishing" ? material.finishingFeed : material.roughingFeed;
+  setInputValue("camTolerance", strategy.tolerance.toFixed(2));
+  setInputValue("camStepOverPercent", String(strategy.stepOverPercent));
+  setInputValue("camStepOver", (definition.diameter * strategy.stepOverPercent / 100).toFixed(2));
+  setInputValue("camStepDown", strategy.stepDown.toFixed(2));
+  setInputValue("camRpm", String(Math.min(definition.defaultRpm || material.defaultRpm, findMachine(textInput("machine", "dental_4x_demo")).spindleMaxRpm)));
+  setInputValue("camFeedRate", String(feed));
+  setInputValue("camStockToLeave", Number(strategy.stockToLeave || strategy.tolerance).toFixed(2));
+  updateCamPanel();
+}
+
+function updateDerivedCamInputs() {
+  const tool = getToolDefinition();
+  const strategy = findStrategy(textInput("camStrategy", "roughing"));
+  const percent = numberInput("camStepOverPercent", strategy.stepOverPercent);
+  setInputValue("camStepOver", (tool.diameter * percent / 100).toFixed(2));
   updateCamPanel();
 }
 
@@ -196,23 +224,23 @@ export function updateCamPanel() {
   const selectedPart = ctx.document.getElementById("camSelectedPart");
   if (selectedPart) selectedPart.value = part ? `${part.label} · ${part.fileName}` : "-";
   const material = ctx.document.getElementById("camMaterial");
-  if (material) material.value = ctx.document.getElementById("material").value;
+  if (material) material.value = params.material.name;
   const machine = ctx.document.getElementById("camMachine");
-  if (machine) machine.value = ctx.document.getElementById("machine").value;
+  if (machine) machine.value = params.machine.name;
   const disc = ctx.document.getElementById("camDisc");
   if (disc) disc.value = `${ctx.discDiameter} x ${ctx.discHeight} mm`;
 
   setCamText("camPointCount", active ? active.points.length : 0);
   setCamText("camLayerCount", active ? active.layers || 0 : 0);
   setCamText("camPathLength", `${(active ? active.length : 0).toFixed(2)} mm`);
-  setCamText("camActiveTool", params.tool.label);
+  setCamText("camActiveTool", `${params.tool.name} · ${params.rpm} rpm · F${params.feedRate}`);
   setCamText("camEstimatedTime", `${((active ? active.estimatedTime : 0) || 0).toFixed(1)} min`);
   setCamText("camRemovedState", `${sim ? sim.removedMarkersCount || 0 : 0} huellas / ${sim ? sim.removedCellsCount || 0 : 0} celdas`);
   setCamText("camRemovedCount", `${sim ? sim.remainingCellsCount || 0 : 0} celdas`);
   setCamText("camStatus", sim && sim.status ? sim.status : active ? active.status || "Trayectoria valida demo" : "Pendiente");
-  setCamText("camCollisionRisk", params.strategy === "Acabado" ? "Acabado demo pendiente" : "Zona protegida activa");
+  setCamText("camCollisionRisk", `${params.strategy} · ${params.material.name} · ${params.machine.axes.join("")}`);
   setCamText("camOvercut", analysis && analysis.possibleOvercut ? "Si - invade zona protegida" : "No detectado");
-  setCamText("camRemaining", `Tol ${params.tolerance.toFixed(2)} mm · SO ${params.stepOver.toFixed(2)} · SD ${params.stepDown.toFixed(2)}`);
+  setCamText("camRemaining", `Tol ${params.tolerance.toFixed(2)} · SO ${params.stepOverPercent.toFixed(0)}%/${params.stepOver.toFixed(2)} mm · SD ${params.stepDown.toFixed(2)} · stock ${params.stockToLeave.toFixed(2)}`);
   setCamText("camMaxError", "Pendiente");
   setCamText("camAvgError", "Pendiente");
   setCamText("camComparisonStatus", analysis ? analysis.status : "Comparacion geometrica real pendiente");
@@ -802,14 +830,53 @@ export function exportCamForJson(model) {
   return serializeCamForPart(model);
 }
 
+export function getCamSettings() {
+  const params = getCamParameters();
+  return {
+    materialId: params.material.id,
+    machineId: params.machine.id,
+    strategyId: params.strategyId,
+    toolId: params.tool.id,
+    tolerance: Number(params.tolerance.toFixed(3)),
+    stepOverPercent: Number(params.stepOverPercent.toFixed(1)),
+    stepOverMm: Number(params.stepOver.toFixed(3)),
+    stepDown: Number(params.stepDown.toFixed(3)),
+    rpm: Number(params.rpm),
+    feedRate: Number(params.feedRate),
+    stockToLeave: Number(params.stockToLeave.toFixed(3))
+  };
+}
+
+export function applyCamSettings(settings) {
+  if (!settings) return;
+  const material = ctx.document.getElementById("material");
+  const machine = ctx.document.getElementById("machine");
+  const strategy = ctx.document.getElementById("camStrategy");
+  const tool = ctx.document.getElementById("camTool");
+  if (material && settings.materialId) material.value = findMaterial(settings.materialId).id;
+  if (machine && settings.machineId) machine.value = findMachine(settings.machineId).id;
+  if (strategy && settings.strategyId) strategy.value = findStrategy(settings.strategyId).id;
+  if (tool && settings.toolId) tool.value = findTool(settings.toolId).id;
+  setInputValue("camTolerance", Number(settings.tolerance || findStrategy(settings.strategyId).tolerance).toFixed(2));
+  setInputValue("camStepOverPercent", String(settings.stepOverPercent || findStrategy(settings.strategyId).stepOverPercent));
+  setInputValue("camStepOver", Number(settings.stepOverMm || findTool(settings.toolId).diameter * findStrategy(settings.strategyId).stepOverPercent / 100).toFixed(2));
+  setInputValue("camStepDown", Number(settings.stepDown || findStrategy(settings.strategyId).stepDown).toFixed(2));
+  setInputValue("camRpm", String(settings.rpm || findTool(settings.toolId).defaultRpm));
+  setInputValue("camFeedRate", String(settings.feedRate || findMaterial(settings.materialId).roughingFeed));
+  setInputValue("camStockToLeave", Number(settings.stockToLeave || findStrategy(settings.strategyId).stockToLeave || 0).toFixed(2));
+  updateCamPanel();
+}
+
 export function serializeCamForPart(model) {
   const cam = ensureCam(model);
+  const settings = getCamSettings();
   return {
     strategy: cam.strategy || getCamParameters().strategy,
     tool: cam.tool || getToolDefinition(),
     tolerance: cam.tolerance || numberInput("camTolerance", 0.5),
     stepOver: cam.stepOver || numberInput("camStepOver", 1.4),
     stepDown: cam.stepDown || numberInput("camStepDown", 1.5),
+    settings,
     protectedZone: cam.protectedZone || null,
     toolpaths: cam.toolpaths || [],
     simulation: {
