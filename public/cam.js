@@ -825,8 +825,8 @@ function updateVoxelStockVisual(showRemoved) {
   const includeRemoved = showRemoved !== undefined ? showRemoved : camViewState.showRemovedVoxels;
   const group = new ctx.THREE.Group();
   group.userData.camVisual = true;
-  addVoxelInstances(group, stock.voxels.filter(v => v.occupied && !v.protected), stock.voxelSize, 0xd1d5db, 0.22, 5200);
-  addVoxelInstances(group, stock.voxels.filter(v => v.occupied && v.protected), stock.voxelSize, 0x38bdf8, 0.30, 1800);
+  addVoxelInstances(group, stock.voxels.filter(v => v.occupied && !v.protected), stock.voxelSize, 0xd1d5db, 0.16, 5200);
+  addVoxelInstances(group, stock.voxels.filter(v => v.occupied && v.protected), stock.voxelSize, 0x38bdf8, 0.24, 1800);
   if (includeRemoved) addVoxelInstances(group, stock.voxels.filter(v => v.removed), stock.voxelSize, 0xf97316, 0.40, 1800);
   ctx.scene.add(group);
   camVisuals.voxelStock = group;
@@ -961,8 +961,7 @@ function setCamViewPreset(preset, silent) {
 
   if (ctx.selectedModel) {
     showDesignTarget(true);
-    ctx.selectedModel.mesh.material.opacity = preset === "stock" || preset === "machined" ? 0.24 : 0.42;
-    ctx.selectedModel.mesh.material.wireframe = preset === "machined";
+    prepareDesignMeshForCam(ctx.selectedModel, preset === "stock" || preset === "machined" ? 0.55 : 0.72, preset === "machined");
   }
   if (camVisuals.voxelStock) camVisuals.voxelStock.visible = showStock;
   if (showStock && ctx.selectedModel && ensureCam(ctx.selectedModel).voxelStock) updateVoxelStockVisual(camViewState.showRemovedVoxels);
@@ -1001,19 +1000,7 @@ function showDesignTargetOnly() {
       parent = parent.parent;
     }
     model.mesh.visible = true;
-    model.mesh.frustumCulled = false;
-    model.mesh.renderOrder = 5;
-    if (model.mesh.material) {
-      model.mesh.material.color.setHex(0x3b82f6);
-      model.mesh.material.transparent = true;
-      model.mesh.material.opacity = 0.92;
-      model.mesh.material.wireframe = false;
-      model.mesh.material.visible = true;
-      model.mesh.material.depthTest = true;
-      model.mesh.material.depthWrite = true;
-      model.mesh.material.side = ctx.THREE.DoubleSide;
-      model.mesh.material.needsUpdate = true;
-    }
+    prepareDesignMeshForCam(model, 0.95, false);
   });
   if (ctx.selectedModel && ctx.selectedModel.mesh) ctx.selectedModel.mesh.visible = true;
   hideSceneBoxHelpers();
@@ -1031,6 +1018,22 @@ function showDesignTargetOnly() {
   camViewState.showRapid = false;
   const input = ctx.document.getElementById("camShowRapidMoves");
   if (input) input.checked = false;
+}
+
+function prepareDesignMeshForCam(model, opacity, wireframe) {
+  if (!model || !model.mesh || !model.mesh.material) return;
+  model.mesh.visible = true;
+  model.mesh.frustumCulled = false;
+  model.mesh.renderOrder = 50;
+  model.mesh.material.color.setHex(0x3b82f6);
+  model.mesh.material.transparent = true;
+  model.mesh.material.opacity = opacity;
+  model.mesh.material.wireframe = !!wireframe;
+  model.mesh.material.visible = true;
+  model.mesh.material.depthTest = false;
+  model.mesh.material.depthWrite = false;
+  model.mesh.material.side = ctx.THREE.DoubleSide;
+  model.mesh.material.needsUpdate = true;
 }
 
 function syncCamVisibilityCheckboxes() {
@@ -1362,11 +1365,7 @@ function drawRapidSegments(segments, parent) {
 
 function showDesignTarget(silent) {
   if (!ctx.selectedModel) return;
-  const mesh = ctx.selectedModel.mesh;
-  mesh.material.color.setHex(0x3b82f6);
-  mesh.material.transparent = true;
-  mesh.material.opacity = 0.42;
-  mesh.material.wireframe = false;
+  prepareDesignMeshForCam(ctx.selectedModel, 0.72, false);
   applyCamVisibility();
   if (!silent) ctx.setStatus("Diseno objetivo visible en azul. Zona protegida: no mecanizar por dentro.", "ok");
 }
