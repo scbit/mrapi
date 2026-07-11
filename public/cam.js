@@ -978,6 +978,21 @@ function setCamViewPreset(preset, silent) {
 }
 
 function showDesignTargetOnly() {
+  ctx.camVisibility.design = true;
+  ctx.camVisibility.stock = false;
+  ctx.camVisibility.toolpath = false;
+  ctx.camVisibility.tool = false;
+  ctx.camVisibility.removed = false;
+  ctx.camVisibility.machined = false;
+  ctx.camVisibility.comparison = false;
+  syncCamVisibilityCheckboxes();
+
+  const renderableModels = ctx.models.filter(model => model.mesh && model.mesh.geometry && model.mesh.geometry.attributes && model.mesh.geometry.attributes.position && model.mesh.geometry.attributes.position.count > 0);
+  if (!renderableModels.length) {
+    ctx.setStatus("No hay STL cargado en memoria. Importa el STL y luego carga el JSON del proyecto.", "warning");
+    return;
+  }
+
   ctx.models.forEach(model => {
     if (!model.mesh) return;
     let parent = model.mesh.parent;
@@ -1016,6 +1031,14 @@ function showDesignTargetOnly() {
   camViewState.showRapid = false;
   const input = ctx.document.getElementById("camShowRapidMoves");
   if (input) input.checked = false;
+}
+
+function syncCamVisibilityCheckboxes() {
+  ctx.document.querySelectorAll(".cam-visibility input[type='checkbox']").forEach(input => {
+    const action = input.getAttribute("onchange") || "";
+    const match = action.match(/toggleCamVisibility\('([^']+)'/);
+    if (match && Object.prototype.hasOwnProperty.call(ctx.camVisibility, match[1])) input.checked = !!ctx.camVisibility[match[1]];
+  });
 }
 
 function hideSceneBoxHelpers() {
