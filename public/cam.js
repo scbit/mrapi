@@ -395,6 +395,7 @@ function prepareDentalCamStock() {
 function applyToolpathToVoxelStock(path) {
   const cam = ensureCam(ctx.selectedModel);
   const stock = cam.voxelStock || createVoxelStockForPart(ctx.selectedModel);
+  classifyProtectedVoxels(ctx.selectedModel);
   const before = stock.removedVoxels || 0;
   const cutPoints = (path.points || []).filter(point => (point.moveType || "cut") === "cut");
   const totalLength = Math.max(path.cutLength || calculatePathLength(cutPoints), CAM_REMOVAL_PRECISION_MM);
@@ -779,21 +780,45 @@ function generateFinishingHeightmapToolpath(part) {
   const cam = ensureCam(part);
   const heightmap = cam.heightmap || generateHeightmapForPart(part);
   computeProtectedHeightmap(heightmap, Math.min(params.stockToLeave, 0.05));
+  const cutSegments = [];
+  const rapidSegments = [];
   const points = [];
+  const cutCells = new Set();
+  const clearanceZ = Math.min(ctx.discHeight / 2 + params.tool.diameter, heightmap.bounds.maxZ + 3);
   let direction = 1;
+  let previousCutEnd = null;
   for (let row = 0; row < heightmap.rows; row += 1) {
-    const rowCells = [];
+    let rowPoints = [];
     for (let col = 0; col < heightmap.cols; col += 1) {
       const cell = heightmap.cells[row * heightmap.cols + col];
-      if (cell && cell.hasSurface) rowCells.push(vectorData(new ctx.THREE.Vector3(cell.x, cell.y, cell.protectedZ)));
+      if (!cell || !cell.hasSurface) continue;
+      const point = Object.assign(vectorData(new ctx.THREE.Vector3(cell.x, cell.y, cell.protectedZ)), { moveType: "cut" });
+      rowPoints.push(point);
+      cutCells.add(`${cell.row}:${cell.col}`);
     }
-    if (direction < 0) rowCells.reverse();
-    rowCells.forEach(point => points.push(point));
+    if (direction < 0) rowPoints.reverse();
+    if (rowPoints.length) {
+      if (previousCutEnd) {
+        const rapid = createRapidLink(previousCutEnd, rowPoints[0], clearanceZ);
+        rapidSegments.push(rapid);
+        rapid.forEach(point => points.push(point));
+      }
+      cutSegments.push(rowPoints);
+      rowPoints.forEach(point => points.push(point));
+      previousCutEnd = rowPoints[rowPoints.length - 1];
+    }
     direction *= -1;
   }
   const path = makeHeightmapToolpath("Acabado heightmap", params, heightmap, points, 1, false, "Acabado heightmap demo. No reemplaza calculo 3D real de superficie.");
+  path.cutSegments = cutSegments;
+  path.rapidSegments = rapidSegments;
+  path.clearanceZ = Number(clearanceZ.toFixed(3));
+  path.cutPointCount = points.filter(point => point.moveType === "cut").length;
+  path.rapidPointCount = points.filter(point => point.moveType === "rapid").length;
+  path.cutLength = Number(calculateSegmentLength(cutSegments).toFixed(3));
+  path.rapidLength = Number(calculateSegmentLength(rapidSegments).toFixed(3));
   cam.toolpaths.push(path);
-  updateHeightmapAnalysis(cam, heightmap, points.length, 0, false, path.status);
+  updateHeightmapAnalysis(cam, heightmap, cutCells.size, 0, false, path.status);
   return path;
 }
 
