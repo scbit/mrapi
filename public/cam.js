@@ -467,7 +467,7 @@ function setDentalOperationTool(id, toolId) {
   const operation = activeDentalOperation(id);
   if (!operation) return;
   operation.toolId = findTool(toolId).id;
-  if (operation.status === "Aplicada") operation.status = "Pendiente";
+  resetAppliedOperationForEdit(operation);
   applyOperationSettings(operation);
   renderCamOperationList();
 }
@@ -476,9 +476,17 @@ function setDentalOperationStrategy(id, strategyId) {
   const operation = activeDentalOperation(id);
   if (!operation) return;
   operation.strategyId = findStrategy(strategyId).id;
-  if (operation.status === "Aplicada") operation.status = "Pendiente";
+  resetAppliedOperationForEdit(operation);
   applyOperationSettings(operation);
   renderCamOperationList();
+}
+
+function resetAppliedOperationForEdit(operation) {
+  if (!operation || (operation.status !== "Aplicada" && operation.status !== "Revisar")) return;
+  operation.status = "Pendiente";
+  operation.removedVoxels = 0;
+  operation.possibleOvercut = false;
+  rebuildStockFromAppliedOperations();
 }
 
 function acceptDentalOperation(id) {
@@ -504,7 +512,41 @@ function deleteDentalOperation(id) {
   cam.operations = ensureDentalOperations(ctx.selectedModel).filter(operation => operation.id !== id);
   if (!cam.operations.length) cam.operations.push(createDentalOperation("Desbaste", "roughing", "flat_2_0"));
   cam.activeOperationId = cam.operations[0].id;
+  rebuildStockFromAppliedOperations();
   renderCamOperationList();
+}
+
+function rebuildStockFromAppliedOperations() {
+  if (!ctx.selectedModel) return;
+  const cam = ensureCam(ctx.selectedModel);
+  const operations = ensureDentalOperations(ctx.selectedModel);
+  const activeId = cam.activeOperationId;
+  const appliedOperations = operations.filter(operation => operation.status === "Aplicada" || operation.status === "Revisar");
+  cam.toolpaths = [];
+  createVoxelStockForPart(ctx.selectedModel);
+  appliedOperations.forEach(operation => {
+    applyOperationSettings(operation);
+    generateDemoToolpath();
+    const path = selectedToolpath();
+    if (!path) {
+      operation.status = "Pendiente";
+      operation.removedVoxels = 0;
+      operation.possibleOvercut = false;
+      return;
+    }
+    const result = applyToolpathToVoxelStock(path);
+    operation.status = result.possibleOvercut ? "Revisar" : "Aplicada";
+    operation.removedVoxels = result.removedVoxels;
+    operation.possibleOvercut = result.possibleOvercut;
+  });
+  cam.activeOperationId = operations.some(operation => operation.id === activeId) ? activeId : operations[0].id;
+  if (appliedOperations.length) showMachinedVoxelStock(true);
+  else {
+    showVoxelStock(true);
+    setCamViewPreset("stock", true);
+  }
+  updateCamPanel();
+  ctx.setStatus(appliedOperations.length ? "Stock recalculado desde las operaciones restantes." : "Operacion eliminada. Stock restaurado al disco inicial.", "ok");
 }
 
 function moveToNextPendingOperation() {
