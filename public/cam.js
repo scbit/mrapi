@@ -9,6 +9,7 @@ let camViewState = {
   showRemovedVoxels: false,
   currentPreset: "simulation"
 };
+let camOperationCounter = 1;
 
 export function initCam(context) {
   ctx = context;
@@ -45,11 +46,13 @@ function setupCamControls() {
 
   const camPanel = ctx.document.querySelector(".panel.right .cam-only");
   if (camPanel && !ctx.document.getElementById("camHeightmapResolution")) {
-    camPanel.insertAdjacentHTML("afterbegin", '<label>Vista CAM</label><button class="secondary" onclick="setCamViewPreset(\'design\')">Diseno objetivo</button><button class="secondary" onclick="setCamViewPreset(\'stock\')">Stock inicial</button><button class="secondary" onclick="setCamViewPreset(\'toolpath\')">Trayectoria</button><button class="secondary" onclick="setCamViewPreset(\'simulation\')">Simulacion</button><button class="secondary" onclick="setCamViewPreset(\'machined\')">Resultado mecanizado</button><label><input id="camShowRapidMoves" type="checkbox" onchange="toggleRapidMoves(this.checked)"> Mostrar rapid moves</label><button class="secondary" onclick="hideCamHelpers()">Ocultar ayudas CAM</button><label>Resolucion heightmap mm</label><input id="camHeightmapResolution" type="number" value="1.00" step="0.10" min="0.25" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="success" onclick="generateHeightmapForSelectedPart()">Generar heightmap</button><button class="secondary" onclick="showHeightmap()">Mostrar heightmap</button><button class="secondary" onclick="showRoughingTolerance()">Mostrar tolerancia desbaste</button><label>Resolucion voxel mm</label><input id="camVoxelSize" type="number" value="1.00" step="0.10" min="0.5" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="success" onclick="createVoxelStockForSelectedPart()">Crear stock voxel</button><button class="secondary" onclick="showVoxelStock()">Mostrar stock voxel</button><button class="secondary" onclick="simulateVoxelToolpath()">Simular desbaste voxel</button><button class="secondary" onclick="showMachinedVoxelStock()">Ver stock mecanizado</button><button class="secondary" onclick="resetVoxelStock()">Reset stock voxel</button>');
+    camPanel.insertAdjacentHTML("afterbegin", '<div class="cam-workflow"><h3>CAM Dental</h3><div class="cam-primary-actions"><button class="success" onclick="prepareDentalCamStock()">Preparar stock</button><button class="success" onclick="runDentalRoughingOperation()">Desbastar stock</button><button class="secondary" onclick="simulateCurrentDentalOperation()">Simular</button><button class="secondary" onclick="showMachinedVoxelStock()">Ver remanente</button></div><div class="cam-view-tabs"><button class="secondary" onclick="setCamViewPreset(\'design\')">Objetivo</button><button class="secondary" onclick="setCamViewPreset(\'stock\')">Stock</button><button class="secondary" onclick="setCamViewPreset(\'toolpath\')">Trayectoria</button><button class="secondary" onclick="setCamViewPreset(\'machined\')">Remanente</button></div><div class="info-card"><h3>Operaciones</h3><div id="camOperationList" class="cam-operation-list"></div><button class="secondary" onclick="addDentalOperation()">Agregar operacion</button></div><label>Resolucion stock mm</label><input id="camVoxelSize" type="number" value="1.00" step="0.10" min="0.5" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="secondary" onclick="toggleCamAdvancedPanel()">Ajustes avanzados</button></div><div id="camAdvancedPanel" class="cam-advanced-panel"><label>Vista CAM</label><button class="secondary" onclick="setCamViewPreset(\'simulation\')">Simulacion</button><label><input id="camShowRapidMoves" type="checkbox" onchange="toggleRapidMoves(this.checked)"> Mostrar rapid moves</label><button class="secondary" onclick="hideCamHelpers()">Ocultar ayudas CAM</button><label>Resolucion heightmap mm</label><input id="camHeightmapResolution" type="number" value="1.00" step="0.10" min="0.25" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="secondary" onclick="generateHeightmapForSelectedPart()">Generar heightmap</button><button class="secondary" onclick="showHeightmap()">Mostrar heightmap</button><button class="secondary" onclick="showRoughingTolerance()">Mostrar tolerancia</button><button class="secondary" onclick="resetVoxelStock()">Reset stock voxel</button></div>');
   }
 
   relabelCamButtons();
+  compactLegacyCamButtons();
   applyStrategyDefaults(true);
+  renderCamOperationList();
 }
 
 function populateMainMaterialAndMachineSelectors() {
@@ -87,6 +90,16 @@ function relabelCamButtons() {
   });
 }
 
+function compactLegacyCamButtons() {
+  ctx.document.querySelectorAll(".panel.right .cam-only > button").forEach(button => {
+    button.style.display = "none";
+  });
+  const heading = ctx.document.querySelector(".panel.right .cam-only > h2");
+  if (heading) heading.style.display = "none";
+  const advanced = ctx.document.getElementById("camAdvancedPanel");
+  if (advanced) advanced.style.display = "none";
+}
+
 function exposeCamWindowFunctions() {
   Object.assign(ctx.window, {
     setAppMode,
@@ -109,6 +122,11 @@ function exposeCamWindowFunctions() {
     simulateVoxelToolpath,
     resetVoxelStock,
     showMachinedVoxelStock,
+    prepareDentalCamStock,
+    runDentalRoughingOperation,
+    simulateCurrentDentalOperation,
+    addDentalOperation,
+    toggleCamAdvancedPanel,
     setCamViewPreset,
     toggleRapidMoves,
     hideCamHelpers,
@@ -208,6 +226,7 @@ function setCamText(id, value) {
 function ensureCam(model) {
   if (!model.cam) model.cam = {};
   if (!Array.isArray(model.cam.toolpaths)) model.cam.toolpaths = [];
+  if (!Array.isArray(model.cam.operations)) model.cam.operations = [];
   if (!model.cam.simulation) model.cam.simulation = {};
   if (!model.cam.analysis) model.cam.analysis = {};
   if (!model.cam.result) model.cam.result = {};
@@ -293,6 +312,140 @@ export function updateCamPanel() {
   setCamText("camComparisonStatus", analysis ? analysis.status : "Comparacion geometrica real pendiente");
   setCamText("camConceptNote", params.strategy === "Acabado" ? "Acabado demo: pasada fina pendiente de superficie real." : "Desbaste demo: deja tolerancia, requiere acabado.");
   updateVoxelMetrics();
+  renderCamOperationList();
+}
+
+function ensureDentalOperations(model) {
+  const cam = ensureCam(model);
+  if (!cam.operations.length) {
+    cam.operations.push(createDentalOperation("Desbaste", "roughing", "flat_2_0"));
+  }
+  return cam.operations;
+}
+
+function createDentalOperation(name, strategyId, toolId) {
+  return {
+    id: `operation_${camOperationCounter++}`,
+    name,
+    strategyId,
+    toolId,
+    status: "Pendiente",
+    removedVoxels: 0,
+    possibleOvercut: false,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function renderCamOperationList() {
+  const list = ctx.document.getElementById("camOperationList");
+  if (!list) return;
+  if (!ctx.selectedModel) {
+    list.innerHTML = '<div class="empty-list">Importa y selecciona una pieza.</div>';
+    return;
+  }
+  const operations = ensureDentalOperations(ctx.selectedModel);
+  list.innerHTML = operations.map((operation, index) => {
+    const tool = findTool(operation.toolId);
+    const strategy = findStrategy(operation.strategyId);
+    const statusClass = operation.possibleOvercut ? "bad" : operation.status === "Aplicada" ? "ok" : "";
+    return `<div class="cam-operation ${statusClass}"><div><b>${index + 1}. ${operation.name}</b><span>${tool.name} · ${strategy.name}</span></div><strong>${operation.status}</strong></div>`;
+  }).join("");
+}
+
+function activeDentalOperation() {
+  if (!ctx.selectedModel) return null;
+  const operations = ensureDentalOperations(ctx.selectedModel);
+  return operations.find(operation => operation.status !== "Aplicada") || operations[operations.length - 1];
+}
+
+function applyOperationSettings(operation) {
+  if (!operation) return;
+  const tool = ctx.document.getElementById("camTool");
+  const strategy = ctx.document.getElementById("camStrategy");
+  if (tool) tool.value = findTool(operation.toolId).id;
+  if (strategy) strategy.value = findStrategy(operation.strategyId).id;
+  applyStrategyDefaults(false);
+}
+
+function prepareDentalCamStock() {
+  if (!ctx.requireModel()) return;
+  ensureDentalOperations(ctx.selectedModel);
+  generateHeightmapForPart(ctx.selectedModel);
+  createVoxelStockForPart(ctx.selectedModel);
+  showVoxelStock(true);
+  setCamViewPreset("stock", true);
+  renderCamOperationList();
+  ctx.setStatus("Stock preparado. Elegi herramienta/operacion y presiona Desbastar stock.", "ok");
+}
+
+function runDentalRoughingOperation() {
+  if (!ctx.requireModel()) return;
+  const operation = activeDentalOperation();
+  applyOperationSettings(operation);
+  if (!ensureCam(ctx.selectedModel).voxelStock) prepareDentalCamStock();
+  generateDemoToolpath();
+  const path = selectedToolpath();
+  if (!path) return;
+  operation.status = "Aplicando";
+  renderCamOperationList();
+  const result = applyToolpathToVoxelStock(path);
+  operation.status = result.possibleOvercut ? "Revisar" : "Aplicada";
+  operation.removedVoxels = result.removedVoxels;
+  operation.possibleOvercut = result.possibleOvercut;
+  showMachinedVoxelStock(true);
+  renderCamOperationList();
+  ctx.setStatus(result.possibleOvercut ? "Operacion aplicada con alerta: posible sobrecorte." : `Operacion aplicada: ${result.removedVoxels} voxels removidos.`, result.possibleOvercut ? "warning" : "ok");
+}
+
+function applyToolpathToVoxelStock(path) {
+  const cam = ensureCam(ctx.selectedModel);
+  const stock = cam.voxelStock || createVoxelStockForPart(ctx.selectedModel);
+  const before = stock.removedVoxels || 0;
+  const cutPoints = (path.points || []).filter(point => (point.moveType || "cut") === "cut");
+  const maxSamples = 2600;
+  const step = Math.max(1, Math.ceil(cutPoints.length / maxSamples));
+  for (let i = 0; i < cutPoints.length; i += step) {
+    removeVoxelsByToolAtPoint(cutPoints[i], path.tool, true);
+  }
+  updateVoxelInfoForPart(ctx.selectedModel);
+  updateOvercutWarningVisual(stock);
+  updateVoxelStockVisual(false);
+  updateCamPanel();
+  return {
+    removedVoxels: Math.max(0, stock.removedVoxels - before),
+    possibleOvercut: !!stock.possibleOvercut
+  };
+}
+
+function simulateCurrentDentalOperation() {
+  if (!ctx.requireModel()) return;
+  const operation = activeDentalOperation();
+  applyOperationSettings(operation);
+  if (!selectedToolpath()) generateDemoToolpath();
+  if (!ensureCam(ctx.selectedModel).voxelStock) createVoxelStockForPart(ctx.selectedModel);
+  setCamViewPreset("simulation", true);
+  startCamSimulation();
+}
+
+function addDentalOperation() {
+  if (!ctx.requireModel()) return;
+  const cam = ensureCam(ctx.selectedModel);
+  const existing = ensureDentalOperations(ctx.selectedModel);
+  const next = existing.length;
+  const presets = [
+    createDentalOperation("Desbaste", "roughing", "flat_2_0"),
+    createDentalOperation("Semiacabado", "roughing", "flat_1_0"),
+    createDentalOperation("Acabado", "finishing", "ball_0_6"),
+    createDentalOperation("Detalle", "finishing", "ball_0_3")
+  ];
+  cam.operations.push(presets[Math.min(next, presets.length - 1)]);
+  renderCamOperationList();
+}
+
+function toggleCamAdvancedPanel() {
+  const panel = ctx.document.getElementById("camAdvancedPanel");
+  if (!panel) return;
+  panel.style.display = panel.style.display === "none" ? "block" : "none";
 }
 
 function heightmapResolution() {
@@ -837,7 +990,7 @@ function addVoxelInstances(parent, voxels, voxelSize, color, opacity, maxInstanc
   parent.add(mesh);
 }
 
-function removeVoxelsByToolAtPoint(point, tool) {
+function removeVoxelsByToolAtPoint(point, tool, deferUpdate) {
   if (!ctx.selectedModel) return 0;
   const cam = ensureCam(ctx.selectedModel);
   const stock = cam.voxelStock || createVoxelStockForPart(ctx.selectedModel);
@@ -866,8 +1019,10 @@ function removeVoxelsByToolAtPoint(point, tool) {
   stock.removedVoxels += removed;
   stock.remainingVoxels = stock.voxels.filter(v => v.occupied).length;
   cam.analysis.possibleOvercut = cam.analysis.possibleOvercut || overcut;
-  updateVoxelInfoForPart(ctx.selectedModel);
-  if (overcut) updateOvercutWarningVisual(stock);
+  if (!deferUpdate) {
+    updateVoxelInfoForPart(ctx.selectedModel);
+    if (overcut) updateOvercutWarningVisual(stock);
+  }
   return removed;
 }
 
@@ -1809,6 +1964,7 @@ export function serializeCamForPart(model) {
     stepOver: cam.stepOver || numberInput("camStepOver", 1.4),
     stepDown: cam.stepDown || numberInput("camStepDown", 1.5),
     settings,
+    operations: cam.operations || [],
     protectedZone: cam.protectedZone || null,
     heightmapInfo: cam.heightmapInfo || (cam.heightmap ? heightmapInfo(cam.heightmap) : null),
     voxelInfo: serializeVoxelInfoForPart(model),
@@ -1868,6 +2024,7 @@ export function restoreCamForPart(model, camData) {
     stepOver: camData && camData.stepOver,
     stepDown: camData && camData.stepDown,
     protectedZone: camData && camData.protectedZone,
+    operations: Array.isArray(camData && camData.operations) ? camData.operations : [],
     heightmapInfo: camData && camData.heightmapInfo,
     voxelInfo: camData && camData.voxelInfo,
     toolpaths: Array.isArray(camData && camData.toolpaths) ? camData.toolpaths : [],
