@@ -77,7 +77,7 @@ function relabelCamButtons() {
     if (action.includes("generateDemoToolpath")) button.textContent = "Generar desbaste heightmap";
     if (action.includes("startCamSimulation")) button.textContent = "Simular desbaste";
     if (action.includes("showRemovedMaterialDemo")) button.textContent = "Ver material a remover";
-    if (action.includes("showMachinedStockApproximation")) button.textContent = "Ver stock remanente";
+    if (action.includes("showMachinedStockApproximation")) button.textContent = "Ver stock remanente real";
     if (action.includes("showDesignTarget")) button.textContent = "Mostrar diseno objetivo";
     if (action.includes("generateMachinedResultDemo")) {
       button.textContent = "Mostrar offset/tolerancia";
@@ -653,23 +653,7 @@ function showMaterialToRemoveFromHeightmap(silent) {
 }
 
 function showRemainingStockFromHeightmap(silent) {
-  const heightmap = ensureHeightmapForSelectedPart();
-  if (!heightmap) return;
-  removeCamObject(camVisuals.machined);
-  const group = new ctx.THREE.Group();
-  const points = sampledHeightmapPoints(heightmap, cell => cell.protectedZ);
-  createMarkerCloud(points, Math.max(heightmap.resolution * 0.24, 0.14), 0x94a3b8, 0.35, null, group);
-  group.userData.camVisual = true;
-  ctx.scene.add(group);
-  camVisuals.machined = group;
-  const cam = ensureCam(ctx.selectedModel);
-  cam.result = { type: "heightmap_remaining_stock_demo", tolerance: getCamParameters().stockToLeave, status: "Stock remanente aproximado sobre protectedZ. Requiere acabado." };
-  cam.analysis.remainingMaterialDemo = true;
-  cam.analysis.status = "Stock remanente heightmap: queda material de tolerancia para acabado.";
-  updateHeightmapMetrics();
-  updateCamPanel();
-  applyCamVisibility();
-  if (!silent) ctx.setStatus("Stock remanente heightmap visible. Falta acabado.", "warning");
+  return showMachinedVoxelStock(silent);
 }
 
 function simulateHeightmapToolpath() {
@@ -938,13 +922,18 @@ function resetVoxelStock() {
 function showMachinedVoxelStock(silent) {
   if (!ctx.requireModel()) return;
   if (!ensureCam(ctx.selectedModel).voxelStock) createVoxelStockForPart(ctx.selectedModel);
-  camViewState.showRemovedVoxels = true;
-  updateVoxelStockVisual(true);
+  removeCamObject(camVisuals.machined);
+  camVisuals.machined = null;
+  removeVisualList(camVisuals.removed);
+  camViewState.showRemovedVoxels = false;
+  updateVoxelStockVisual(false);
   showDesignTarget(true);
   setCamViewPreset("machined", true);
+  const cam = ensureCam(ctx.selectedModel);
+  cam.result = { type: "voxel_remaining_stock", status: "Stock remanente real: voxels ocupados despues del mecanizado acumulado." };
   updateCamPanel();
   const stock = ensureCam(ctx.selectedModel).voxelStock;
-  if (!silent) ctx.setStatus(stock.possibleOvercut ? "Stock mecanizado visible con advertencia de sobrecorte." : "Stock mecanizado voxel visible.", stock.possibleOvercut ? "warning" : "ok");
+  if (!silent) ctx.setStatus(stock.possibleOvercut ? "Stock remanente real visible con advertencia de sobrecorte." : "Stock remanente real visible: material actual menos desbastado.", stock.possibleOvercut ? "warning" : "ok");
 }
 
 function setCamViewPreset(preset, silent) {
@@ -957,7 +946,7 @@ function setCamViewPreset(preset, silent) {
   const showStock = preset === "stock" || preset === "simulation" || preset === "machined";
   const showToolpath = preset === "toolpath" || preset === "simulation";
   const showTool = preset === "simulation";
-  camViewState.showRemovedVoxels = preset === "machined";
+  camViewState.showRemovedVoxels = false;
 
   if (ctx.selectedModel) {
     showDesignTarget(true);
@@ -1461,7 +1450,7 @@ function showStockRemainingDemo(silent) {
 }
 
 function showMachinedStockApproximation(silent) {
-  return showRemainingStockFromHeightmap(silent);
+  return showMachinedVoxelStock(silent);
 }
 
 function createMarkerCloud(points, radius, color, opacity, list, parent) {
@@ -1557,7 +1546,7 @@ export function stepCamAnimation() {
   if (camSimulation.currentIndex >= camSimulation.pathPoints.length) {
     stopCamSimulation("Simulacion finalizada");
     if (ctx.selectedModel && ensureCam(ctx.selectedModel).voxelStock) updateVoxelStockVisual();
-    showRemainingStockFromHeightmap(true);
+    showMachinedVoxelStock(true);
     compareApproxMachinedStockToDesign(true);
     ctx.setStatus("Simulacion CAM finalizada. Revisar remanente y acabado pendiente.", "ok");
   }
@@ -1655,7 +1644,7 @@ export function rebuildCamVisualsForModel(model) {
   if (!model) return;
   const cam = ensureCam(model);
   cam.toolpaths.forEach(drawToolpath);
-  if (cam.result && cam.result.type && cam.heightmap) showRemainingStockFromHeightmap(true);
+  if (cam.result && cam.result.type && cam.voxelStock) showMachinedVoxelStock(true);
   if (cam.heightmap) showRoughingTolerance(true);
   applyCamVisibility();
   updateCamPanel();
