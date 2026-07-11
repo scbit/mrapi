@@ -1401,6 +1401,7 @@ function setCamViewPreset(preset, silent) {
   ctx.camVisibility.machined = preset === "machined";
   ctx.camVisibility.comparison = false;
 
+  if (ctx.disc) ctx.disc.visible = showStock && preset !== "machined";
   if (ctx.selectedModel) {
     showDesignTarget(true);
     const designOpacity = preset === "machined" ? 0.24 : preset === "stock" ? 0.42 : 0.72;
@@ -2235,7 +2236,7 @@ function toggleCamVisibility(key, value) {
 }
 
 function applyCamVisibility() {
-  if (ctx.disc) ctx.disc.visible = ctx.camVisibility.stock;
+  if (ctx.disc) ctx.disc.visible = ctx.camVisibility.stock && camViewState.currentPreset !== "machined";
   ctx.models.forEach(model => {
     model.mesh.visible = ctx.camVisibility.design;
     model.supports.forEach(support => support.mesh.visible = ctx.camVisibility.supports);
