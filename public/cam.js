@@ -1128,8 +1128,7 @@ function updateVoxelStockVisual(showRemoved) {
   const hasMachining = stock.voxels.some(v => v.removed);
   const lineMode = camViewState.stockRenderMode === "lines";
   if (hasMachining) {
-    const visibleVoxels = visibleStockVoxelsForCurrentView(stock);
-    addVoxelSurfaceMesh(group, visibleVoxels, stock, 0xd1d5db, lineMode ? 0.42 : 0.96, lineMode);
+    addVoxelSurfaceMesh(group, stock.voxels.filter(v => v.occupied), stock, 0xd1d5db, lineMode ? 0.42 : 0.92, lineMode);
   } else {
     addSmoothDiscStockMesh(group, stock, 0xd1d5db, lineMode ? 0.28 : 0.86, lineMode);
   }
@@ -1138,31 +1137,6 @@ function updateVoxelStockVisual(showRemoved) {
   camVisuals.voxelStock = group;
   updateOvercutWarningVisual(stock);
   applyCamVisibility();
-}
-
-function visibleStockVoxelsForCurrentView(stock) {
-  const occupied = stock.voxels.filter(v => v.occupied);
-  if (camViewState.currentPreset !== "machined" || !ctx.selectedModel || camViewState.stockRenderMode === "lines") return occupied;
-  const window = machiningInspectionWindow(ctx.selectedModel);
-  return occupied.filter(voxel => {
-    const inWindowXY = voxel.x >= window.minX && voxel.x <= window.maxX && voxel.y >= window.minY && voxel.y <= window.maxY;
-    const opensTop = inWindowXY && voxel.z > window.cutFloorZ;
-    return !opensTop;
-  });
-}
-
-function machiningInspectionWindow(part) {
-  part.mesh.updateMatrixWorld(true);
-  const box = new ctx.THREE.Box3().setFromObject(part.mesh);
-  const size = box.getSize(new ctx.THREE.Vector3());
-  const margin = Math.max(8, Math.max(size.x, size.y) * 0.55);
-  return {
-    minX: box.min.x - margin,
-    maxX: box.max.x + margin,
-    minY: box.min.y - margin,
-    maxY: box.max.y + margin,
-    cutFloorZ: Math.max(-ctx.discHeight / 2, box.min.z - 1.5)
-  };
 }
 
 function addSmoothDiscStockMesh(parent, stock, color, opacity, lineMode) {
