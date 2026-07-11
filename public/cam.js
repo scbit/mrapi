@@ -1070,7 +1070,7 @@ function showVoxelStock(silent) {
   if (!cam.voxelStock) createVoxelStockForPart(ctx.selectedModel);
   updateVoxelStockVisual();
   showDesignTarget(true);
-  if (!silent) ctx.setStatus("Disco voxel visible: gris remanente, naranja removido, celeste protegido.", "ok");
+  if (!silent) ctx.setStatus("Stock inicial visible: disco dental completo con el diseno objetivo encima.", "ok");
 }
 
 function hideVoxelStock() {
@@ -1087,13 +1087,43 @@ function updateVoxelStockVisual(showRemoved) {
   const includeRemoved = showRemoved !== undefined ? showRemoved : camViewState.showRemovedVoxels;
   const group = new ctx.THREE.Group();
   group.userData.camVisual = true;
-  addVoxelSurfaceMesh(group, stock.voxels.filter(v => v.occupied && !v.protected), stock, 0xd1d5db, 0.26);
-  addVoxelSurfaceMesh(group, stock.voxels.filter(v => v.occupied && v.protected), stock, 0x38bdf8, 0.20);
+  const hasMachining = stock.voxels.some(v => v.removed);
+  if (hasMachining) {
+    addVoxelSurfaceMesh(group, stock.voxels.filter(v => v.occupied), stock, 0xd1d5db, 0.32);
+  } else {
+    addSmoothDiscStockMesh(group, stock, 0xd1d5db, 0.34);
+  }
   if (includeRemoved) addVoxelInstances(group, stock.voxels.filter(v => v.removed), stock.voxelSize, 0xf97316, 0.40, 1800);
   ctx.scene.add(group);
   camVisuals.voxelStock = group;
   updateOvercutWarningVisual(stock);
   applyCamVisibility();
+}
+
+function addSmoothDiscStockMesh(parent, stock, color, opacity) {
+  const radius = Math.max(ctx.discDiameter / 2, 0.1);
+  const height = Math.max(ctx.discHeight, 0.1);
+  const geometry = new ctx.THREE.CylinderGeometry(radius, radius, height, 128, 1, false);
+  geometry.rotateX(Math.PI / 2);
+  const material = new ctx.THREE.MeshStandardMaterial({
+    color,
+    transparent: true,
+    opacity,
+    roughness: 0.68,
+    metalness: 0.03,
+    side: ctx.THREE.DoubleSide,
+    depthWrite: false
+  });
+  const mesh = new ctx.THREE.Mesh(geometry, material);
+  mesh.userData.camVisual = true;
+  parent.add(mesh);
+
+  const edges = new ctx.THREE.LineSegments(
+    new ctx.THREE.EdgesGeometry(geometry),
+    new ctx.THREE.LineBasicMaterial({ color: 0xe5e7eb, transparent: true, opacity: 0.45 })
+  );
+  edges.userData.camVisual = true;
+  parent.add(edges);
 }
 
 function addVoxelSurfaceMesh(parent, voxels, stock, color, opacity) {
@@ -1419,7 +1449,7 @@ function updateVoxelMetrics() {
   setCamText("camRemaining", `Voxel ${info.voxelSize.toFixed(2)} mm Â· cobertura ${info.coverageDemo.toFixed(1)}%`);
   setCamText("camStatus", info.possibleOvercut ? "Trayectoria invalida: sobrecorte detectado" : `Voxel CAM: ${info.totalVoxels} total / ${info.removedVoxels} removidos`);
   setCamText("camComparisonStatus", info.possibleOvercut ? "ALERTA: trayectoria toca zona protegida del STL" : info.status || "Stock voxel listo");
-  setCamText("camConceptNote", info.possibleOvercut ? "ALERTA: trayectoria toca zona protegida del STL. Revisar altura Z, stock to leave o estrategia." : "Voxel CAM: gris remanente, naranja removido, celeste protegido.");
+  setCamText("camConceptNote", info.possibleOvercut ? "ALERTA: trayectoria toca zona protegida del STL. Revisar altura Z, stock to leave o estrategia." : "Stock inicial: disco completo. Remanente: gris mecanizado; naranja removido.");
 }
 
 function serializeVoxelInfoForPart(part) {
