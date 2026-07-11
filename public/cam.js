@@ -1263,6 +1263,7 @@ function updateVoxelStockVisual(showRemoved) {
     if (camViewState.stockScope === "part") addVoxelSurfaceMesh(group, visibleVoxels, stock, 0xd1d5db, lineMode ? 0.36 : 0.34, lineMode, occupiedVoxels);
     else addSmoothDiscStockMesh(group, stock, 0xd1d5db, lineMode ? 0.28 : 0.86, lineMode);
   }
+  if (camViewState.stockScope === "part" && !lineMode) addLocalExcessStockGhost(group, visibleVoxels, stock);
   if (includeRemoved) addVoxelInstances(group, stock.voxels.filter(v => v.removed), stock.voxelSize, 0xf97316, 0.40, 1800);
   ctx.scene.add(group);
   camVisuals.voxelStock = group;
@@ -1277,6 +1278,36 @@ function stockVoxelsForCurrentScope(voxels, stock) {
   const margin = Math.max((stock && stock.voxelSize ? stock.voxelSize : 1) * 3, getToolDefinition().diameter * 2, 3);
   box.expandByScalar(margin);
   return voxels.filter(voxel => box.containsPoint(new ctx.THREE.Vector3(voxel.x, voxel.y, voxel.z)));
+}
+
+function addLocalExcessStockGhost(parent, voxels, stock) {
+  const excess = voxels.filter(voxel => !voxel.protected);
+  if (!excess.length) return;
+  const maxInstances = 7000;
+  const count = Math.min(excess.length, maxInstances);
+  const step = Math.max(1, Math.ceil(excess.length / count));
+  const geometry = new ctx.THREE.BoxGeometry(stock.voxelSize * 0.78, stock.voxelSize * 0.78, stock.voxelSize * 0.78);
+  const material = new ctx.THREE.MeshStandardMaterial({
+    color: 0xe5e7eb,
+    transparent: true,
+    opacity: 0.24,
+    roughness: 0.82,
+    metalness: 0.01,
+    depthWrite: false,
+    depthTest: true
+  });
+  const mesh = new ctx.THREE.InstancedMesh(geometry, material, count);
+  const matrix = new ctx.THREE.Matrix4();
+  let index = 0;
+  for (let i = 0; i < excess.length && index < count; i += step) {
+    matrix.makeTranslation(excess[i].x, excess[i].y, excess[i].z);
+    mesh.setMatrixAt(index, matrix);
+    index += 1;
+  }
+  mesh.count = index;
+  mesh.renderOrder = 12;
+  mesh.userData.camVisual = true;
+  parent.add(mesh);
 }
 
 function addSmoothDiscStockMesh(parent, stock, color, opacity, lineMode) {
