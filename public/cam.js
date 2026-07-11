@@ -1,77 +1,852 @@
-let camApi = {};
+let ctx = null;
+let camVisuals = null;
+let camSimulation = null;
+let camRuntimeStocks = null;
+
+const CAM_DEFAULTS = {
+  roughing: { strategy: "Desbaste", tolerance: 0.5, stepDown: 1.5, stepOverFactor: 0.7 },
+  finishing: { strategy: "Acabado", tolerance: 0.05, stepDown: 0.3, stepOverFactor: 0.2 }
+};
+
+const TOOL_DEFINITIONS = {
+  "flat-2.0": { id: "flat-2.0", label: "Fresa plana 2.0 mm", type: "flat", diameter: 2 },
+  "flat-1.0": { id: "flat-1.0", label: "Fresa plana 1.0 mm", type: "flat", diameter: 1 },
+  "ball-1.0": { id: "ball-1.0", label: "Fresa esferica 1.0 mm", type: "ball", diameter: 1 },
+  "ball-0.6": { id: "ball-0.6", label: "Fresa esferica 0.6 mm", type: "ball", diameter: 0.6 },
+  "ball-0.3": { id: "ball-0.3", label: "Fresa esferica 0.3 mm", type: "ball", diameter: 0.3 }
+};
 
 export function initCam(context) {
-  const source = "function ensureCam(model){if(!model.cam)model.cam={toolpaths:[],simulation:{},result:{},comparison:{},analysis:{}};if(!Array.isArray(model.cam.toolpaths))model.cam.toolpaths=[];if(!model.cam.simulation)model.cam.simulation={};if(!model.cam.result)model.cam.result={};if(!model.cam.comparison)model.cam.comparison={};if(!model.cam.analysis)model.cam.analysis={};model.cam.simulation=Object.assign({type:\"stock_removal_demo\",resolution:1.5,removedMarkersCount:0,removedCellsCount:0,remainingCellsCount:0,overcutDemo:false,status:\"Sin trayectoria\"},model.cam.simulation);model.cam.analysis=Object.assign({comparisonMode:\"approx_demo\",realMeshComparison:false,coverageDemo:0,possibleOvercut:false,remainingMaterialDemo:true,overcutDemo:false,collisionRiskDemo:false,maxDeviationDemo:null,avgDeviationDemo:null,status:\"Comparación real pendiente\"},model.cam.analysis);return model.cam}function applyAppMode(){document.querySelectorAll(\".panel\").forEach(panel=>Array.from(panel.children).forEach(child=>{if(!child.classList.contains(\"cam-only\"))child.classList.add(\"cad-only\")}));const cad=currentMode===\"CAD\";document.querySelectorAll(\".cad-only\").forEach(el=>el.style.display=cad?\"\":\"none\");document.querySelectorAll(\".cam-only\").forEach(el=>el.style.display=cad?\"none\":\"block\");document.getElementById(\"appTitle\").innerText=\"MRAPI CAM Dental | Modo: \"+(cad?\"CAD / Preparación\":\"CAM / Fresado\");document.getElementById(\"modeBadge\").innerText=cad?\"Modo CAD\":\"Modo CAM\";document.getElementById(\"cadModeBtn\").className=cad?\"active\":\"secondary\";document.getElementById(\"camModeBtn\").className=cad?\"secondary\":\"active\";if(!cad&&selectedModel)rebuildCamVisualsForModel(selectedModel);updateCamMetrics();applyCamVisibility()}window.setAppMode=function(mode){currentMode=mode===\"CAM\"?\"CAM\":\"CAD\";applyAppMode();setStatus(currentMode===\"CAM\"?\"Modo CAM / Fresado activo. Demo visual de stock remanente, sin booleana real.\":\"Modo CAD / Preparación activo.\",\"ok\")};function updateCamPanel(){updateCamMetrics()}window.updateCamPanel=updateCamPanel;function activeCamToolDiameter(){const el=document.getElementById(\"camTool\");return el?Number(el.value)||2:2}function activeCamStrategy(){const el=document.getElementById(\"camStrategy\");return el?el.value:\"Desbaste demo\"}function setCamText(id,value){const el=document.getElementById(id);if(el)el.innerText=String(value)}function updateCamMetrics(){const cam=selectedModel?ensureCam(selectedModel):null,tool=activeCamToolDiameter(),active=cam&&cam.toolpaths.length?cam.toolpaths[cam.toolpaths.length-1]:null,analysis=cam?cam.analysis:null,sim=cam?cam.simulation:null;if(document.getElementById(\"camSelectedPart\"))document.getElementById(\"camSelectedPart\").value=selectedModel?selectedModel.label+\" · \"+selectedModel.fileName:\"-\";if(document.getElementById(\"camMaterial\"))document.getElementById(\"camMaterial\").value=document.getElementById(\"material\").value;if(document.getElementById(\"camMachine\"))document.getElementById(\"camMachine\").value=document.getElementById(\"machine\").value;if(document.getElementById(\"camDisc\"))document.getElementById(\"camDisc\").value=discDiameter+\" x \"+discHeight+\" mm\";setCamText(\"camPointCount\",active?active.points.length:0);setCamText(\"camLayerCount\",active?active.layers||0:0);setCamText(\"camPathLength\",(active?active.length:0).toFixed(2)+\" mm\");setCamText(\"camActiveTool\",\"Fresa \"+tool+\" mm\");setCamText(\"camEstimatedTime\",((active?active.estimatedTime:0)||0).toFixed(1)+\" min\");setCamText(\"camRemovedState\",(sim?sim.removedMarkersCount||0:0)+\" markers / \"+(sim?sim.removedCellsCount||0:0)+\" celdas\");setCamText(\"camRemovedCount\",(sim?sim.remainingCellsCount||0:0)+\" celdas\");setCamText(\"camStatus\",sim&&sim.status?sim.status:active?active.strategy+\" listo\":\"Sin trayectoria\");setCamText(\"camCollisionRisk\",analysis?(analysis.collisionRiskDemo?\"Demo: riesgo\":\"Demo / no calculado\"):\"No calculado\");setCamText(\"camOvercut\",analysis&&analysis.possibleOvercut?\"Sí - invade diseño\":\"No / demo\");setCamText(\"camRemaining\",analysis&&analysis.coverageDemo!=null?Number(analysis.coverageDemo).toFixed(1)+\" %\":\"0 %\");setCamText(\"camMaxError\",\"Pendiente\");setCamText(\"camAvgError\",\"Pendiente\");setCamText(\"camComparisonStatus\",cam&&cam.comparison.status?cam.comparison.status:analysis?analysis.status:\"Comparación real pendiente\");setCamText(\"camConceptNote\",\"Resultado mecanizado demo aproximado: basado en trayectoria y herramienta, no en booleana real.\");if(cam){cam.activeTool=tool;cam.strategy=activeCamStrategy()}}function camShapeKey(ix,iy){return ix+\",\"+iy}function getModelWorldSamples(model,maxSamples){model.mesh.updateMatrixWorld(true);const attr=model.mesh.geometry.attributes.position,matrix=model.mesh.matrixWorld,total=attr.count,step=Math.max(1,Math.floor(total/(maxSamples||5000))),samples=[];for(let i=0;i<total;i+=step){samples.push(new THREE.Vector3(attr.getX(i),attr.getY(i),attr.getZ(i)).applyMatrix4(matrix))}return samples}function buildCamShape(model,resolution,toolDiameter){const samples=getModelWorldSamples(model,6500),box=new THREE.Box3().setFromPoints(samples),margin=toolDiameter*1.25,dilate=Math.max(1,Math.ceil(margin/resolution)),core=new Map(),cut=new Map();samples.forEach(p=>{const ix=Math.round(p.x/resolution),iy=Math.round(p.y/resolution),coreKey=camShapeKey(ix,iy),coreCell=core.get(coreKey)||{ix,iy,minZ:p.z,maxZ:p.z,count:0};coreCell.minZ=Math.min(coreCell.minZ,p.z);coreCell.maxZ=Math.max(coreCell.maxZ,p.z);coreCell.count++;core.set(coreKey,coreCell);for(let dx=-dilate;dx<=dilate;dx++)for(let dy=-dilate;dy<=dilate;dy++){const dist=Math.sqrt(dx*dx+dy*dy)*resolution;if(dist>margin)continue;const key=camShapeKey(ix+dx,iy+dy),cell=cut.get(key)||{ix:ix+dx,iy:iy+dy,minZ:p.z,maxZ:p.z,count:0,core:false};cell.minZ=Math.min(cell.minZ,p.z);cell.maxZ=Math.max(cell.maxZ,p.z);cell.count++;cut.set(key,cell)}});core.forEach((cell,key)=>{const cutCell=cut.get(key);if(cutCell)cutCell.core=true});const rows=new Map();cut.forEach(cell=>{const row=rows.get(cell.iy)||[];row.push(cell);rows.set(cell.iy,row)});rows.forEach(row=>row.sort((a,b)=>a.ix-b.ix));return{samples,box,core,cut,rows,resolution,margin,toolDiameter}}function camPointInShape(shape,point,useCore,pad){if(!shape)return false;const cells=useCore?shape.core:shape.cut,radius=Math.max(0,Math.ceil((pad||0)/shape.resolution)),ix=Math.round(point.x/shape.resolution),iy=Math.round(point.y/shape.resolution);for(let dx=-radius;dx<=radius;dx++)for(let dy=-radius;dy<=radius;dy++){const cell=cells.get(camShapeKey(ix+dx,iy+dy));if(!cell)continue;const xyDist=Math.sqrt(dx*dx+dy*dy)*shape.resolution;if(xyDist<=(pad||shape.resolution*.75))return true}return false}function camCellNearCore(shape,x,y,z,pad){if(!shape)return false;const radius=Math.max(1,Math.ceil((pad||shape.resolution)/shape.resolution)),ix=Math.round(x/shape.resolution),iy=Math.round(y/shape.resolution);for(let dx=-radius;dx<=radius;dx++)for(let dy=-radius;dy<=radius;dy++){const cell=shape.core.get(camShapeKey(ix+dx,iy+dy));if(!cell)continue;if(z>=cell.minZ-(pad||0)&&z<=cell.maxZ+(pad||0))return true}return false}function pointsLength(points){let total=0;for(let i=1;i<points.length;i++)total+=v3(points[i]).distanceTo(v3(points[i-1]));return total}function generateLayerZigZagPath(model,toolDiameter){model.mesh.updateMatrixWorld(true);const resolution=Math.max(.6,toolDiameter*.45),shape=buildCamShape(model,resolution,toolDiameter),box=shape.box,stepOver=Math.max(.35,toolDiameter*.55),stepDown=1,points=[];let layers=0,direction=1;const rows=Array.from(shape.rows.keys()).sort((a,b)=>a-b);for(let z=box.max.z+toolDiameter*.5;z>=box.min.z-toolDiameter*.25;z-=stepDown){layers++;rows.forEach((iy,rowIndex)=>{if(rowIndex%Math.max(1,Math.round(stepOver/resolution))!==0)return;const row=(shape.rows.get(iy)||[]).filter(cell=>!shape.core.has(camShapeKey(cell.ix,cell.iy)));if(!row.length)return;let segments=[],segStart=row[0],prev=row[0];for(let i=1;i<row.length;i++){const cell=row[i];if(cell.ix-prev.ix>1){segments.push([segStart,prev]);segStart=cell}prev=cell}segments.push([segStart,prev]);segments.forEach(seg=>{const y=Number((iy*resolution).toFixed(3)),x1=Number((seg[0].ix*resolution).toFixed(3)),x2=Number((seg[1].ix*resolution).toFixed(3)),a={x:direction>0?x1:x2,y,z:Number(z.toFixed(3))},b={x:direction>0?x2:x1,y,z:Number(z.toFixed(3))};points.push(a,b);direction*=-1})})}return{points,layers,stepOver,stepDown,margin:shape.margin,shapeResolution:resolution,shapeCells:shape.cut.size,coreCells:shape.core.size,shape}}function generateRoughingDemoToolpath(model){if(!model)return null;const cam=ensureCam(model),toolDiameter=activeCamToolDiameter(),strategy=\"Desbaste demo por silueta STL\",toolName=\"Fresa \"+toolDiameter+\" mm\",pathData=generateLayerZigZagPath(model,toolDiameter),length=pointsLength(pathData.points),path={id:\"toolpath_\"+Date.now(),strategy,tool:toolName,toolDiameter,stepOver:Number(pathData.stepOver.toFixed(3)),stepDown:pathData.stepDown,layers:pathData.layers,points:pathData.points,length:Number(length.toFixed(3)),estimatedTime:Number((length/120).toFixed(2)),shapeResolution:Number(pathData.shapeResolution.toFixed(3)),shapeCells:pathData.shapeCells,coreCells:pathData.coreCells,createdAt:new Date().toISOString()};cam.toolpaths.push(path);cam.simulation.status=\"Trayectoria por silueta STL lista\";markToolpathOvercutSegments(path);return path}window.generateDemoToolpath=function(){if(!requireModel())return;clearCamVisualObjects(false);initializeStockSimulationForPart(selectedModel);const path=generateRoughingDemoToolpath(selectedModel);if(path)drawToolpath(path);applyCamVisibility();updateCamMetrics();setStatus(\"Trayectoria demo generada desde la silueta del STL.\",\"ok\")};function drawToolpath(path){const pts=path.points.map(v3),geometry=new THREE.BufferGeometry().setFromPoints(pts),line=new THREE.Line(geometry,new THREE.LineBasicMaterial({color:0xfacc15}));line.userData.camVisual=true;scene.add(line);camVisuals.toolpaths.push(line);markToolpathOvercutSegments(path);return line}function selectedToolpath(){if(!selectedModel)return null;const cam=ensureCam(selectedModel);return cam.toolpaths[cam.toolpaths.length-1]||null}function removeCamObject(obj){if(!obj)return;scene.remove(obj);obj.traverse&&obj.traverse(child=>{if(child.geometry)child.geometry.dispose();if(child.material)child.material.dispose()});if(obj.geometry)obj.geometry.dispose();if(obj.material)obj.material.dispose()}function removeVisualList(list){list.forEach(removeCamObject);list.length=0}function clearCamVisualObjects(resetTool){removeVisualList(camVisuals.toolpaths);removeVisualList(camVisuals.removed);removeVisualList(camVisuals.overcut);removeCamObject(camVisuals.tool);removeCamObject(camVisuals.machined);removeCamObject(camVisuals.comparison);removeCamObject(camVisuals.stock);camVisuals.tool=null;camVisuals.machined=null;camVisuals.comparison=null;camVisuals.stock=null;if(resetTool!==false){camSimulation.isRunning=false;camSimulation.isPaused=false;camSimulation.currentIndex=0;camSimulation.pathPoints=[];camSimulation.removedMaterialMeshes=[];camSimulation.toolMesh=null}}function rebuildCamVisualsForModel(model){stopCamSimulation(\"Simulación detenida\");clearCamVisualObjects(false);if(!model)return;const cam=ensureCam(model);cam.toolpaths.forEach(drawToolpath);if(cam.simulation&&cam.simulation.remainingCellsCount)initializeStockSimulationForPart(model);if(cam.simulation&&cam.simulation.removedMaterialDemo)showRemovedMaterialDemo(true);if(cam.result&&cam.result.type===\"stock_remnant_demo\")showMachinedStockApproximation(true);if(cam.analysis&&cam.analysis.possibleOvercut)markToolpathOvercutSegments(selectedToolpath());applyCamVisibility();updateCamMetrics()}function createToolMesh(diameter){const group=new THREE.Group(),bodyLength=18,tipRadius=Math.max(diameter*.55,.35),bodyGeometry=new THREE.CylinderGeometry(diameter/2,diameter/2,bodyLength,32);bodyGeometry.rotateX(Math.PI/2);const body=new THREE.Mesh(bodyGeometry,new THREE.MeshStandardMaterial({color:0xe5e7eb,metalness:.35,roughness:.32})),tip=new THREE.Mesh(new THREE.SphereGeometry(tipRadius,24,12),new THREE.MeshStandardMaterial({color:0xff4fd8,emissive:0x831843,emissiveIntensity:.25,metalness:.05,roughness:.28}));tip.position.set(0,0,0);body.position.set(0,0,tipRadius+bodyLength/2);group.add(body);group.add(tip);group.userData.toolDiameter=diameter;group.userData.tipIsOrigin=true;group.rotation.set(0,0,0);scene.add(group);return group}function createToolVisual(diameter){return createToolMesh(diameter)}function updateToolPosition(point){if(!camVisuals.tool||!point)return;camVisuals.tool.position.set(point.x,point.y,point.z);camVisuals.tool.rotation.set(0,0,0)}function setToolVisible(flag){if(camVisuals.tool)camVisuals.tool.visible=!!flag}function removeToolMesh(){removeCamObject(camVisuals.tool);camVisuals.tool=null;camSimulation.toolMesh=null}function initializeStockSimulationForPart(part){if(!part)return null;const cam=ensureCam(part),tool=activeCamToolDiameter(),resolution=Number(cam.simulation.resolution)||1.5,shape=buildCamShape(part,resolution,tool),box=shape.box,margin=tool*1.5,bounds={minX:Number((box.min.x-margin).toFixed(3)),maxX:Number((box.max.x+margin).toFixed(3)),minY:Number((box.min.y-margin).toFixed(3)),maxY:Number((box.max.y+margin).toFixed(3)),minZ:Number((-discHeight/2).toFixed(3)),maxZ:Number((discHeight/2).toFixed(3))},cells=[];shape.cut.forEach(shapeCell=>{const x=Number((shapeCell.ix*resolution).toFixed(3)),y=Number((shapeCell.iy*resolution).toFixed(3));for(let z=bounds.minZ;z<=bounds.maxZ;z+=resolution){const protectedZone=camCellNearCore(shape,x,y,z,tool*.45);cells.push({x,y,z:Number(z.toFixed(3)),removed:false,protectedZone})}});const stock={resolution,bounds,cells,totalCells:cells.length,removedCellsCount:0,remainingCellsCount:cells.length,overcutPoints:0,shape:{coreCells:shape.core.size,cutCells:shape.cut.size,margin:shape.margin}};camRuntimeStocks[part.id]=stock;cam.simulation=Object.assign(cam.simulation,{type:\"stock_removal_demo\",resolution,bounds,totalCells:stock.totalCells,shapeCoreCells:shape.core.size,shapeCutCells:shape.cut.size,removedCellsCount:0,remainingCellsCount:stock.remainingCellsCount,removedMarkersCount:cam.simulation.removedMarkersCount||0,overcutDemo:false});return stock}function stockForSelected(){if(!selectedModel)return null;return camRuntimeStocks[selectedModel.id]||initializeStockSimulationForPart(selectedModel)}function removeStockByToolAtPoint(point,toolDiameter){const stock=stockForSelected();if(!stock||!selectedModel)return;const radius=toolDiameter/2,rz=Math.max(stock.resolution*1.2,radius);let removedNow=0,overcut=false;stock.cells.forEach(cell=>{if(cell.removed)return;const dx=cell.x-point.x,dy=cell.y-point.y,dz=cell.z-point.z;if(Math.sqrt(dx*dx+dy*dy)<=radius&&Math.abs(dz)<=rz){if(cell.protectedZone){overcut=true}else{cell.removed=true;removedNow++}}});stock.removedCellsCount+=removedNow;stock.remainingCellsCount=stock.totalCells-stock.removedCellsCount;if(overcut)stock.overcutPoints++;const cam=ensureCam(selectedModel);cam.simulation.removedCellsCount=stock.removedCellsCount;cam.simulation.remainingCellsCount=stock.remainingCellsCount;cam.simulation.overcutDemo=cam.simulation.overcutDemo||overcut;cam.analysis.possibleOvercut=cam.analysis.possibleOvercut||overcut;cam.analysis.overcutDemo=cam.analysis.overcutDemo||overcut;cam.analysis.coverageDemo=stock.totalCells?Number((stock.removedCellsCount/stock.totalCells*100).toFixed(1)):0;cam.analysis.remainingMaterialDemo=stock.remainingCellsCount>0;if(overcut)addOvercutMarker(point,toolDiameter)}function updateStockVisualization(){const stock=stockForSelected();if(!stock)return;removeCamObject(camVisuals.machined);const visibleCells=stock.cells.filter(c=>!c.removed),limit=2200,step=Math.max(1,Math.ceil(visibleCells.length/limit)),shown=visibleCells.filter((_,i)=>i%step===0),geometry=new THREE.BoxGeometry(stock.resolution*.75,stock.resolution*.75,stock.resolution*.75),material=new THREE.MeshStandardMaterial({color:0x94a3b8,transparent:true,opacity:.2,roughness:.55});const mesh=new THREE.InstancedMesh(geometry,material,shown.length),dummy=new THREE.Object3D();shown.forEach((cell,i)=>{dummy.position.set(cell.x,cell.y,cell.z);dummy.updateMatrix();mesh.setMatrixAt(i,dummy.matrix)});mesh.userData.camVisual=true;mesh.userData.stockRemnant=true;scene.add(mesh);camVisuals.machined=mesh;applyCamVisibility()}function addToolContactMarker(point,toolDiameter){const radius=Math.max(toolDiameter/2,.25),mesh=new THREE.Mesh(new THREE.SphereGeometry(radius,16,10),new THREE.MeshStandardMaterial({color:0xf97316,transparent:true,opacity:.42,depthWrite:false}));mesh.position.copy(point);mesh.userData.camVisual=true;scene.add(mesh);camVisuals.removed.push(mesh);camSimulation.removedMaterialMeshes.push(mesh);if(selectedModel){const cam=ensureCam(selectedModel);if(!Array.isArray(cam.simulation.removedMaterialMarkers))cam.simulation.removedMaterialMarkers=[];cam.simulation.removedMaterialMarkers.push(vdata(point));cam.simulation.removedMaterialDemo=true;cam.simulation.removedMarkersCount=camVisuals.removed.length}}function addRemovedMaterialMarker(point,toolDiameter){addToolContactMarker(point,toolDiameter);removeStockByToolAtPoint(point,toolDiameter);applyCamVisibility()}function detectApproxOvercutAtPoint(point,toolDiameter,part){if(!part)return false;const shape=buildCamShape(part,Math.max(.8,toolDiameter*.5),toolDiameter);return camPointInShape(shape,v3(point),true,toolDiameter*.45)}function addOvercutMarker(point,toolDiameter){const mesh=new THREE.Mesh(new THREE.SphereGeometry(Math.max(toolDiameter*.35,.3),16,8),new THREE.MeshStandardMaterial({color:0xef4444,transparent:true,opacity:.72,emissive:0x7f1d1d,emissiveIntensity:.25}));mesh.position.copy(v3(point));mesh.userData.camVisual=true;scene.add(mesh);camVisuals.overcut.push(mesh)}function markToolpathOvercutSegments(path){removeVisualList(camVisuals.overcut);if(!path||!selectedModel)return;let count=0,step=Math.max(1,Math.floor(path.points.length/140));path.points.forEach((p,i)=>{if(i%step!==0)return;if(detectApproxOvercutAtPoint(p,path.toolDiameter,selectedModel)){count++;addOvercutMarker(v3(p),path.toolDiameter)}});const cam=ensureCam(selectedModel);cam.analysis.possibleOvercut=count>0;cam.analysis.overcutDemo=count>0;cam.analysis.status=count>0?\"La trayectoria invade el diseño objetivo. Estrategia no válida.\":\"Comparación real pendiente\";cam.simulation.overcutDemo=count>0}function showDesignTarget(){if(!requireModel())return;selectedModel.mesh.material.color.setHex(0x3b82f6);selectedModel.mesh.material.transparent=true;selectedModel.mesh.material.opacity=.24;selectedModel.mesh.material.wireframe=true;applyCamVisibility();setStatus(\"Diseño objetivo visible en azul/wireframe. No es resultado mecanizado.\",\"ok\")}window.showDesignTarget=showDesignTarget;function showRemovedMaterialDemo(silent){if(!selectedModel)return;const path=selectedToolpath();if(!path){if(!silent)setStatus(\"Generá una trayectoria demo primero.\",\"warning\");return}clearRemovedMaterialVisuals();initializeStockSimulationForPart(selectedModel);const step=Math.max(1,Math.floor(path.points.length/120));path.points.forEach((p,index)=>{if(index%step===0)addRemovedMaterialMarker(v3(p),path.toolDiameter)});const cam=ensureCam(selectedModel);cam.simulation.removedMaterialDemo=true;cam.simulation.status=cam.simulation.status||\"Material removido demo visible\";updateCamMetrics();if(!silent)setStatus(\"Huellas de fresa demo visibles.\",\"ok\")}window.showRemovedMaterialDemo=showRemovedMaterialDemo;function showMachinedStockApproximation(silent){if(!requireModel())return;stockForSelected();updateStockVisualization();showDesignTarget();const cam=ensureCam(selectedModel);cam.result={type:\"stock_remnant_demo\",generatedAt:new Date().toISOString(),source:\"toolpath_stock_cells\",note:\"Stock remanente demo aproximado. No es copia del STL ni booleana real.\"};cam.simulation.status=cam.simulation.status||\"Stock remanente demo visible\";updateCamMetrics();if(!silent)setStatus(\"Stock remanente aproximado visible. No es una copia del STL.\",\"ok\")}window.showMachinedStockApproximation=showMachinedStockApproximation;function generateMachinedResultDemo(silent){showMachinedStockApproximation(silent)}window.generateMachinedResultDemo=generateMachinedResultDemo;window.generateFinalResultDemo=generateMachinedResultDemo;function compareApproxMachinedStockToDesign(silent){if(!requireModel())return;showMachinedStockApproximation(true);const cam=ensureCam(selectedModel),stock=stockForSelected();cam.comparison={comparedAt:new Date().toISOString(),maxError:null,avgError:null,status:\"Comparación real pendiente: requiere voxel/malla mecanizada real\"};cam.analysis.comparisonMode=\"approx_demo\";cam.analysis.realMeshComparison=false;cam.analysis.coverageDemo=stock&&stock.totalCells?Number((stock.removedCellsCount/stock.totalCells*100).toFixed(1)):0;cam.analysis.remainingMaterialDemo=stock?stock.remainingCellsCount>0:true;cam.analysis.possibleOvercut=cam.analysis.possibleOvercut||!!(stock&&stock.overcutPoints);updateCamMetrics();if(!silent)setStatus(\"Comparación demo actualizada: error geométrico real pendiente.\",\"warning\")}window.compareApproxMachinedStockToDesign=compareApproxMachinedStockToDesign;function compareMachinedResultToDesignDemo(silent){compareApproxMachinedStockToDesign(silent)}window.compareMachinedResultToDesignDemo=compareMachinedResultToDesignDemo;window.compareResultToDesignDemo=compareMachinedResultToDesignDemo;function updateComparisonMetrics(){updateCamMetrics()}function startCamSimulation(){if(!requireModel())return;const path=selectedToolpath();if(!path){setStatus(\"Generá una trayectoria demo primero.\",\"warning\");return}stopCamSimulation(\"Simulación reiniciada\");clearRemovedMaterialVisuals();initializeStockSimulationForPart(selectedModel);removeToolMesh();camVisuals.tool=createToolMesh(path.toolDiameter);camSimulation.toolMesh=camVisuals.tool;camSimulation.pathPoints=path.points.map(v3);camSimulation.currentIndex=0;camSimulation.isRunning=true;camSimulation.isPaused=false;camSimulation.lastTime=0;camSimulation.removalVisualStep=Math.max(1,Math.floor(camSimulation.pathPoints.length/90));updateToolPosition(camSimulation.pathPoints[0]);const cam=ensureCam(selectedModel);cam.simulation=Object.assign(cam.simulation,{removedMaterialDemo:false,removedMarkersCount:0,status:\"Simulación en curso\",tool:{diameter:path.toolDiameter,length:18,currentPosition:vdata(camSimulation.pathPoints[0])}});applyCamVisibility();updateCamMetrics();setStatus(\"Simulación CAM iniciada.\",\"ok\")}function stepCamAnimation(){if(!camSimulation.isRunning||camSimulation.isPaused||!camVisuals.tool||!camSimulation.pathPoints.length)return;const now=performance.now();if(now-camSimulation.lastTime<25)return;camSimulation.lastTime=now;const point=camSimulation.pathPoints[camSimulation.currentIndex];updateToolPosition(point);const path=selectedToolpath();if(path&&camSimulation.currentIndex%camSimulation.removalVisualStep===0)addRemovedMaterialMarker(point,path.toolDiameter);const cam=selectedModel?ensureCam(selectedModel):null;if(cam&&cam.simulation.tool)cam.simulation.tool.currentPosition=vdata(point);camSimulation.currentIndex++;if(camSimulation.currentIndex%20===0)updateCamMetrics();if(camSimulation.currentIndex>=camSimulation.pathPoints.length){stopCamSimulation(\"Simulación finalizada\");if(cam){cam.simulation.status=\"Simulación finalizada\";cam.simulation.removedMaterialDemo=true}updateStockVisualization();compareApproxMachinedStockToDesign(true);updateCamMetrics();setStatus(\"Simulación CAM finalizada. Revisá stock remanente y sobrecorte demo.\",\"ok\")}}function pauseCamSimulation(){if(!camSimulation.isRunning)return;camSimulation.isPaused=true;if(selectedModel)ensureCam(selectedModel).simulation.status=\"Simulación pausada\";updateCamMetrics();setStatus(\"Simulación pausada.\",\"warning\")}function resumeCamSimulation(){if(!camSimulation.isRunning)return;camSimulation.isPaused=false;if(selectedModel)ensureCam(selectedModel).simulation.status=\"Simulación en curso\";updateCamMetrics();setStatus(\"Simulación reanudada.\",\"ok\")}function stopCamSimulation(status){camSimulation.isRunning=false;camSimulation.isPaused=false;camSimulation.animationFrameId=null;if(selectedModel&&status)ensureCam(selectedModel).simulation.status=status}function resetCamSimulation(){stopCamSimulation(\"Simulación reseteada\");camSimulation.currentIndex=0;const path=selectedToolpath();if(camVisuals.tool&&path&&path.points.length)updateToolPosition(v3(path.points[0]));clearRemovedMaterialVisuals();if(selectedModel){delete camRuntimeStocks[selectedModel.id];const cam=ensureCam(selectedModel);cam.simulation.removedMaterialDemo=false;cam.simulation.removedMarkersCount=0;cam.simulation.removedCellsCount=0;cam.simulation.remainingCellsCount=0;cam.simulation.status=\"Simulación reseteada\";cam.analysis.coverageDemo=0;cam.analysis.possibleOvercut=false}updateCamMetrics();setStatus(\"Simulación CAM reseteada.\",\"ok\")}window.startCamSimulation=startCamSimulation;window.pauseCamSimulation=pauseCamSimulation;window.resumeCamSimulation=resumeCamSimulation;window.resetCamSimulation=resetCamSimulation;function clearRemovedMaterialVisuals(){removeVisualList(camVisuals.removed);removeVisualList(camVisuals.overcut);camSimulation.removedMaterialMeshes=[];if(selectedModel){const cam=ensureCam(selectedModel);cam.simulation.removedMaterialMarkers=[];cam.simulation.removedMarkersCount=0;cam.simulation.removedMaterialDemo=false}}function clearCamSimulation(){if(!selectedModel)return;stopCamSimulation(\"Sin trayectoria\");clearCamVisualObjects(true);delete camRuntimeStocks[selectedModel.id];selectedModel.mesh.material.opacity=1;selectedModel.mesh.material.transparent=false;selectedModel.mesh.material.wireframe=wireframe;selectedModel.cam={toolpaths:[],simulation:{type:\"stock_removal_demo\",resolution:1.5,status:\"Sin trayectoria\",removedMaterialDemo:false,removedMarkersCount:0,removedCellsCount:0,remainingCellsCount:0,overcutDemo:false},result:{},comparison:{},analysis:{comparisonMode:\"approx_demo\",realMeshComparison:false,coverageDemo:0,possibleOvercut:false,remainingMaterialDemo:true,status:\"Comparación real pendiente\"}};applyPieceMaterial(selectedModel);updateCamMetrics();setStatus(\"Simulación CAM borrada. STL, disco y soportes se conservan.\",\"ok\")}window.clearCamSimulation=clearCamSimulation;window.toggleCamVisibility=function(key,value){camVisibility[key]=!!value;applyCamVisibility()};function applyCamVisibility(){if(disc)disc.visible=camVisibility.stock;models.forEach(model=>{model.mesh.visible=camVisibility.design;model.supports.forEach(s=>s.mesh.visible=camVisibility.supports)});camVisuals.toolpaths.forEach(obj=>obj.visible=camVisibility.toolpath);camVisuals.removed.forEach(obj=>obj.visible=camVisibility.removed);camVisuals.overcut.forEach(obj=>obj.visible=camVisibility.comparison);setToolVisible(camVisibility.tool);if(camVisuals.machined)camVisuals.machined.visible=camVisibility.machined;if(camVisuals.comparison)camVisuals.comparison.visible=camVisibility.comparison;if(camVisuals.stock)camVisuals.stock.visible=camVisibility.stock}function hydrateCamFromJson(model,camData){model.cam={toolpaths:Array.isArray(camData&&camData.toolpaths)?camData.toolpaths:[],simulation:camData&&camData.simulation?camData.simulation:{},result:camData&&camData.result?camData.result:{},comparison:camData&&camData.comparison?camData.comparison:{},analysis:camData&&camData.analysis?camData.analysis:{}};ensureCam(model);if(model===selectedModel&&currentMode===\"CAM\")rebuildCamVisualsForModel(model)}function exportCamForJson(model){const cam=ensureCam(model),sim=cam.simulation||{},analysis=cam.analysis||{},comparison=cam.comparison||{},result=cam.result||{};return{toolpaths:cam.toolpaths||[],simulation:{type:sim.type||\"stock_removal_demo\",resolution:sim.resolution||1.5,totalCells:sim.totalCells||0,removedMarkersCount:sim.removedMarkersCount||0,removedCellsCount:sim.removedCellsCount||0,remainingCellsCount:sim.remainingCellsCount||0,overcutDemo:!!sim.overcutDemo,status:sim.status||\"Sin trayectoria\",tool:sim.tool||null},result:{type:result.type||\"\",generatedAt:result.generatedAt||null,source:result.source||\"\",note:result.note||\"\"},comparison:{comparedAt:comparison.comparedAt||null,maxError:comparison.maxError==null?null:comparison.maxError,avgError:comparison.avgError==null?null:comparison.avgError,status:comparison.status||\"Comparación real pendiente\"},analysis:{comparisonMode:analysis.comparisonMode||\"approx_demo\",realMeshComparison:false,coverageDemo:analysis.coverageDemo||0,possibleOvercut:!!analysis.possibleOvercut,remainingMaterialDemo:analysis.remainingMaterialDemo!==false,overcutDemo:!!analysis.overcutDemo,collisionRiskDemo:!!analysis.collisionRiskDemo,maxDeviationDemo:null,avgDeviationDemo:null,status:analysis.status||\"Comparación real pendiente\"}}}\nwindow.__mrapiCamApi={applyAppMode,updateCamPanel,rebuildCamVisualsForModel,stepCamAnimation,exportCamForJson,hydrateCamFromJson,generateDemoToolpath:window.generateDemoToolpath,startCamSimulation,pauseCamSimulation,resumeCamSimulation,resetCamSimulation,clearCamSimulation,ensureCam};";
-  Function("context", "camApiRef", "source", "with(context){eval(source);camApiRef.value=context.window.__mrapiCamApi;}")(context, {
-    get value() {
-      return camApi;
-    },
-    set value(value) {
-      camApi = value;
-    }
-  }, source);
+  ctx = context;
+  camVisuals = context.camVisuals;
+  camSimulation = context.camSimulation;
+  camRuntimeStocks = context.camRuntimeStocks;
+  setupCamControls();
+  exposeCamWindowFunctions();
 }
 
-function callCam(name, args) {
-  if (!camApi[name]) {
-    return undefined;
+function setupCamControls() {
+  const strategy = ctx.document.getElementById("camStrategy");
+  if (strategy) {
+    strategy.innerHTML = '<option>Desbaste</option><option>Acabado</option><option>Corte soportes demo</option>';
+    strategy.value = "Desbaste";
+    strategy.onchange = () => applyStrategyDefaults(true);
   }
 
-  return camApi[name](...args);
+  const tool = ctx.document.getElementById("camTool");
+  if (tool) {
+    tool.innerHTML = Object.values(TOOL_DEFINITIONS).map(item => `<option value="${item.id}">${item.label}</option>`).join("");
+    tool.value = "flat-2.0";
+    tool.onchange = () => applyStrategyDefaults(false);
+  }
+
+  if (strategy && !ctx.document.getElementById("camTolerance")) {
+    strategy.insertAdjacentHTML("afterend", '<label>Tolerancia mm</label><input id="camTolerance" type="number" value="0.50" step="0.01" min="0" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>StepOver mm</label><input id="camStepOver" type="number" value="1.40" step="0.05" min="0.05" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>StepDown mm</label><input id="camStepDown" type="number" value="1.50" step="0.05" min="0.05" onchange="updateCamPanel()" oninput="updateCamPanel()"/>');
+  }
+
+  relabelCamButtons();
+  applyStrategyDefaults(true);
 }
 
-export function applyAppMode(...args) {
-  return callCam("applyAppMode", args);
+function relabelCamButtons() {
+  const buttons = Array.from(ctx.document.querySelectorAll(".cam-only button"));
+  buttons.forEach(button => {
+    const action = button.getAttribute("onclick") || "";
+    if (action.includes("generateDemoToolpath")) button.textContent = "Generar desbaste demo";
+    if (action.includes("startCamSimulation")) button.textContent = "Simular desbaste";
+    if (action.includes("showRemovedMaterialDemo")) button.textContent = "Ver material a remover";
+    if (action.includes("showMachinedStockApproximation")) button.textContent = "Ver stock remanente";
+    if (action.includes("showDesignTarget")) button.textContent = "Mostrar diseno objetivo";
+    if (action.includes("generateMachinedResultDemo")) {
+      button.textContent = "Mostrar offset/tolerancia";
+      button.setAttribute("onclick", "showToleranceOffsetDemo()");
+    }
+    if (action.includes("compare")) button.textContent = "Comparar remanente vs diseno";
+  });
 }
 
-export function updateCamPanel(...args) {
-  return callCam("updateCamPanel", args);
+function exposeCamWindowFunctions() {
+  Object.assign(ctx.window, {
+    setAppMode,
+    updateCamPanel,
+    generateDemoToolpath,
+    startCamSimulation,
+    pauseCamSimulation,
+    resumeCamSimulation,
+    resetCamSimulation,
+    clearCamSimulation,
+    toggleCamVisibility,
+    showDesignTarget,
+    showRemovedMaterialDemo,
+    showMachinedStockApproximation,
+    showToleranceOffsetDemo,
+    compareApproxMachinedStockToDesign,
+    compareMachinedResultToDesignDemo: compareApproxMachinedStockToDesign,
+    compareResultToDesignDemo: compareApproxMachinedStockToDesign,
+    generateMachinedResultDemo: showToleranceOffsetDemo,
+    generateFinalResultDemo: showToleranceOffsetDemo
+  });
 }
 
-export function rebuildCamVisualsForModel(...args) {
-  return callCam("rebuildCamVisualsForModel", args);
+function numberInput(id, fallback) {
+  const el = ctx.document.getElementById(id);
+  const value = el ? Number(el.value) : NaN;
+  return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-export function stepCamAnimation(...args) {
-  return callCam("stepCamAnimation", args);
+function textInput(id, fallback) {
+  const el = ctx.document.getElementById(id);
+  return el && el.value ? el.value : fallback;
 }
 
-export function exportCamForJson(...args) {
-  return callCam("exportCamForJson", args);
+function getToolDefinition() {
+  const selected = textInput("camTool", "flat-2.0");
+  return TOOL_DEFINITIONS[selected] || TOOL_DEFINITIONS["flat-2.0"];
 }
 
-export function hydrateCamFromJson(...args) {
-  return callCam("hydrateCamFromJson", args);
+function getCamParameters() {
+  const strategy = textInput("camStrategy", "Desbaste");
+  const tool = getToolDefinition();
+  const defaults = strategy === "Acabado" ? CAM_DEFAULTS.finishing : CAM_DEFAULTS.roughing;
+  return {
+    strategy,
+    tool,
+    tolerance: numberInput("camTolerance", defaults.tolerance),
+    stepOver: numberInput("camStepOver", tool.diameter * defaults.stepOverFactor),
+    stepDown: numberInput("camStepDown", defaults.stepDown),
+    protectedMethod: "bbox_or_ellipse_demo"
+  };
 }
 
-export function generateDemoToolpath(...args) {
-  return callCam("generateDemoToolpath", args);
+function applyStrategyDefaults(forceTool) {
+  const strategy = textInput("camStrategy", "Desbaste");
+  const finishing = strategy === "Acabado";
+  const tool = ctx.document.getElementById("camTool");
+  if (tool && forceTool) tool.value = finishing ? "ball-1.0" : "flat-2.0";
+
+  const definition = getToolDefinition();
+  const defaults = finishing ? CAM_DEFAULTS.finishing : CAM_DEFAULTS.roughing;
+  setInputValue("camTolerance", defaults.tolerance.toFixed(2));
+  setInputValue("camStepOver", (definition.diameter * defaults.stepOverFactor).toFixed(2));
+  setInputValue("camStepDown", defaults.stepDown.toFixed(2));
+  updateCamPanel();
 }
 
-export function startCamSimulation(...args) {
-  return callCam("startCamSimulation", args);
+function setInputValue(id, value) {
+  const input = ctx.document.getElementById(id);
+  if (input) input.value = value;
 }
 
-export function pauseCamSimulation(...args) {
-  return callCam("pauseCamSimulation", args);
+function setCamText(id, value) {
+  const el = ctx.document.getElementById(id);
+  if (el) el.innerText = String(value);
 }
 
-export function resumeCamSimulation(...args) {
-  return callCam("resumeCamSimulation", args);
+function ensureCam(model) {
+  if (!model.cam) model.cam = {};
+  if (!Array.isArray(model.cam.toolpaths)) model.cam.toolpaths = [];
+  if (!model.cam.simulation) model.cam.simulation = {};
+  if (!model.cam.analysis) model.cam.analysis = {};
+  if (!model.cam.result) model.cam.result = {};
+  if (!model.cam.comparison) model.cam.comparison = {};
+  model.cam.simulation = Object.assign({
+    removedMarkersCount: 0,
+    status: "Sin trayectoria"
+  }, model.cam.simulation);
+  model.cam.analysis = Object.assign({
+    possibleOvercut: false,
+    comparisonReal: false,
+    remainingMaterialDemo: true,
+    status: "Demo CAM aproximado"
+  }, model.cam.analysis);
+  return model.cam;
 }
 
-export function resetCamSimulation(...args) {
-  return callCam("resetCamSimulation", args);
+export function applyAppMode() {
+  ctx.document.querySelectorAll(".panel").forEach(panel => Array.from(panel.children).forEach(child => {
+    if (!child.classList.contains("cam-only")) child.classList.add("cad-only");
+  }));
+
+  const cad = ctx.currentMode === "CAD";
+  ctx.document.querySelectorAll(".cad-only").forEach(el => el.style.display = cad ? "" : "none");
+  ctx.document.querySelectorAll(".cam-only").forEach(el => el.style.display = cad ? "none" : "block");
+  ctx.document.getElementById("appTitle").innerText = "MRAPI CAM Dental | Modo: " + (cad ? "CAD / Preparacion" : "CAM / Fresado");
+  ctx.document.getElementById("modeBadge").innerText = cad ? "Modo CAD" : "Modo CAM";
+  ctx.document.getElementById("cadModeBtn").className = cad ? "active" : "secondary";
+  ctx.document.getElementById("camModeBtn").className = cad ? "secondary" : "active";
+  if (!cad && ctx.selectedModel) rebuildCamVisualsForModel(ctx.selectedModel);
+  updateCamPanel();
+  applyCamVisibility();
 }
 
-export function clearCamSimulation(...args) {
-  return callCam("clearCamSimulation", args);
+function setAppMode(mode) {
+  ctx.currentMode = mode === "CAM" ? "CAM" : "CAD";
+  applyAppMode();
+  ctx.setStatus(ctx.currentMode === "CAM" ? "Modo CAM / Fresado activo. El STL azul es diseno objetivo protegido." : "Modo CAD / Preparacion activo.", "ok");
 }
 
-export function serializeCamForPart(part) {
-  return exportCamForJson(part);
+export function updateCamPanel() {
+  const part = ctx.selectedModel;
+  const params = getCamParameters();
+  const cam = part ? ensureCam(part) : null;
+  const active = cam && cam.toolpaths.length ? cam.toolpaths[cam.toolpaths.length - 1] : null;
+  const analysis = cam ? cam.analysis : null;
+  const sim = cam ? cam.simulation : null;
+
+  const selectedPart = ctx.document.getElementById("camSelectedPart");
+  if (selectedPart) selectedPart.value = part ? `${part.label} · ${part.fileName}` : "-";
+  const material = ctx.document.getElementById("camMaterial");
+  if (material) material.value = ctx.document.getElementById("material").value;
+  const machine = ctx.document.getElementById("camMachine");
+  if (machine) machine.value = ctx.document.getElementById("machine").value;
+  const disc = ctx.document.getElementById("camDisc");
+  if (disc) disc.value = `${ctx.discDiameter} x ${ctx.discHeight} mm`;
+
+  setCamText("camPointCount", active ? active.points.length : 0);
+  setCamText("camLayerCount", active ? active.layers || 0 : 0);
+  setCamText("camPathLength", `${(active ? active.length : 0).toFixed(2)} mm`);
+  setCamText("camActiveTool", params.tool.label);
+  setCamText("camEstimatedTime", `${((active ? active.estimatedTime : 0) || 0).toFixed(1)} min`);
+  setCamText("camRemovedState", `${sim ? sim.removedMarkersCount || 0 : 0} huellas / ${sim ? sim.removedCellsCount || 0 : 0} celdas`);
+  setCamText("camRemovedCount", `${sim ? sim.remainingCellsCount || 0 : 0} celdas`);
+  setCamText("camStatus", sim && sim.status ? sim.status : active ? active.status || "Trayectoria valida demo" : "Pendiente");
+  setCamText("camCollisionRisk", params.strategy === "Acabado" ? "Acabado demo pendiente" : "Zona protegida activa");
+  setCamText("camOvercut", analysis && analysis.possibleOvercut ? "Si - invade zona protegida" : "No detectado");
+  setCamText("camRemaining", `Tol ${params.tolerance.toFixed(2)} mm · SO ${params.stepOver.toFixed(2)} · SD ${params.stepDown.toFixed(2)}`);
+  setCamText("camMaxError", "Pendiente");
+  setCamText("camAvgError", "Pendiente");
+  setCamText("camComparisonStatus", analysis ? analysis.status : "Comparacion geometrica real pendiente");
+  setCamText("camConceptNote", params.strategy === "Acabado" ? "Acabado demo: pasada fina pendiente de superficie real." : "Desbaste demo: deja tolerancia, requiere acabado.");
 }
 
-export function restoreCamForPart(part, camData) {
-  return hydrateCamFromJson(part, camData);
+function computeProtectedZoneDemo(part, tolerance, tool) {
+  part.mesh.updateMatrixWorld(true);
+  const box = new ctx.THREE.Box3().setFromObject(part.mesh);
+  const center = box.getCenter(new ctx.THREE.Vector3());
+  const size = box.getSize(new ctx.THREE.Vector3());
+  const toolRadius = tool.diameter / 2;
+  const padding = tolerance + toolRadius;
+  return {
+    method: "bbox_or_ellipse_demo",
+    tolerance,
+    toolRadius,
+    padding,
+    box,
+    center,
+    size,
+    radiusX: size.x / 2 + padding,
+    radiusY: size.y / 2 + padding,
+    minZ: box.min.z - tolerance,
+    maxZ: box.max.z + tolerance
+  };
+}
+
+function isPointInsideProtectedZoneDemo(point, protectedZone) {
+  const dx = (point.x - protectedZone.center.x) / Math.max(protectedZone.radiusX, 0.01);
+  const dy = (point.y - protectedZone.center.y) / Math.max(protectedZone.radiusY, 0.01);
+  const insideXY = dx * dx + dy * dy <= 1;
+  const insideZ = point.z >= protectedZone.minZ && point.z <= protectedZone.maxZ;
+  return insideXY && insideZ;
+}
+
+function isPointInsideStockDemo(point, stock) {
+  const dx = (point.x - stock.center.x) / Math.max(stock.radiusX, 0.01);
+  const dy = (point.y - stock.center.y) / Math.max(stock.radiusY, 0.01);
+  return dx * dx + dy * dy <= 1 && point.z >= stock.minZ && point.z <= stock.maxZ;
+}
+
+function createStockLocalDemo(part, params) {
+  const zone = computeProtectedZoneDemo(part, params.tolerance, params.tool);
+  const margin = Math.max(params.tool.diameter * 4, 8);
+  return {
+    center: zone.center.clone(),
+    radiusX: zone.radiusX + margin,
+    radiusY: zone.radiusY + margin,
+    minZ: Math.max(-ctx.discHeight / 2, zone.minZ - params.stepDown),
+    maxZ: Math.min(ctx.discHeight / 2, zone.maxZ + params.stepDown),
+    protectedZone: zone,
+    margin
+  };
+}
+
+function generateRoughingToolpathDemo(part) {
+  const params = getCamParameters();
+  const stock = createStockLocalDemo(part, params);
+  const points = [];
+  let layers = 0;
+  let overcut = false;
+  const yStart = stock.center.y - stock.radiusY;
+  const yEnd = stock.center.y + stock.radiusY;
+  const zTop = Math.min(ctx.discHeight / 2, stock.maxZ);
+  const zBottom = Math.max(-ctx.discHeight / 2, stock.minZ);
+
+  for (let z = zTop; z >= zBottom; z -= params.stepDown) {
+    layers += 1;
+    let direction = 1;
+    for (let y = yStart; y <= yEnd; y += params.stepOver) {
+      const normalizedY = (y - stock.center.y) / stock.radiusY;
+      if (Math.abs(normalizedY) > 1) continue;
+      const outerHalf = stock.radiusX * Math.sqrt(1 - normalizedY * normalizedY);
+      const protectedTerm = 1 - ((y - stock.protectedZone.center.y) ** 2) / (stock.protectedZone.radiusY ** 2);
+      const segments = [];
+      const leftOuter = stock.center.x - outerHalf;
+      const rightOuter = stock.center.x + outerHalf;
+
+      if (protectedTerm > 0) {
+        const protectedHalf = stock.protectedZone.radiusX * Math.sqrt(protectedTerm);
+        const leftProtected = stock.protectedZone.center.x - protectedHalf;
+        const rightProtected = stock.protectedZone.center.x + protectedHalf;
+        if (leftOuter < leftProtected) segments.push([leftOuter, leftProtected]);
+        if (rightProtected < rightOuter) segments.push([rightProtected, rightOuter]);
+      } else {
+        segments.push([leftOuter, rightOuter]);
+      }
+
+      segments.forEach(segment => {
+        const a = new ctx.THREE.Vector3(direction > 0 ? segment[0] : segment[1], y, z);
+        const b = new ctx.THREE.Vector3(direction > 0 ? segment[1] : segment[0], y, z);
+        if (isPointInsideProtectedZoneDemo(a, stock.protectedZone) || isPointInsideProtectedZoneDemo(b, stock.protectedZone)) overcut = true;
+        points.push(vectorData(a), vectorData(b));
+        direction *= -1;
+      });
+    }
+  }
+
+  return makeToolpath("Desbaste", params, stock, points, layers, overcut, "Trayectoria de desbaste valida demo");
+}
+
+function generateFinishingToolpathDemo(part) {
+  const params = getCamParameters();
+  const stock = createStockLocalDemo(part, params);
+  const zone = stock.protectedZone;
+  const points = [];
+  let layers = 0;
+
+  for (let z = Math.min(zone.maxZ, ctx.discHeight / 2); z >= Math.max(zone.minZ, -ctx.discHeight / 2); z -= params.stepDown) {
+    layers += 1;
+    for (let a = 0; a <= Math.PI * 2; a += Math.max(0.08, params.stepOver / Math.max(zone.radiusX, zone.radiusY))) {
+      points.push(vectorData(new ctx.THREE.Vector3(
+        zone.center.x + Math.cos(a) * (zone.radiusX + params.tolerance),
+        zone.center.y + Math.sin(a) * (zone.radiusY + params.tolerance),
+        z
+      )));
+    }
+  }
+
+  return makeToolpath("Acabado", params, stock, points, layers, false, "Acabado demo fino: superficie real pendiente");
+}
+
+function makeToolpath(strategy, params, stock, points, layers, overcut, status) {
+  const length = calculatePathLength(points);
+  return {
+    id: `toolpath_${Date.now()}`,
+    strategy,
+    tool: params.tool,
+    tolerance: params.tolerance,
+    stepOver: params.stepOver,
+    stepDown: params.stepDown,
+    protectedZone: {
+      method: stock.protectedZone.method,
+      tolerance: params.tolerance,
+      padding: stock.protectedZone.padding,
+      center: vectorData(stock.protectedZone.center),
+      radiusX: Number(stock.protectedZone.radiusX.toFixed(3)),
+      radiusY: Number(stock.protectedZone.radiusY.toFixed(3)),
+      minZ: Number(stock.protectedZone.minZ.toFixed(3)),
+      maxZ: Number(stock.protectedZone.maxZ.toFixed(3))
+    },
+    stock: {
+      center: vectorData(stock.center),
+      radiusX: Number(stock.radiusX.toFixed(3)),
+      radiusY: Number(stock.radiusY.toFixed(3)),
+      minZ: Number(stock.minZ.toFixed(3)),
+      maxZ: Number(stock.maxZ.toFixed(3))
+    },
+    points,
+    layers,
+    length: Number(length.toFixed(3)),
+    estimatedTime: Number((length / 120).toFixed(2)),
+    possibleOvercut: overcut,
+    status,
+    createdAt: new Date().toISOString()
+  };
+}
+
+export function generateDemoToolpath() {
+  if (!ctx.requireModel()) return;
+  clearCamVisualObjects(false);
+  const part = ctx.selectedModel;
+  const params = getCamParameters();
+  const cam = ensureCam(part);
+  const path = params.strategy === "Acabado" ? generateFinishingToolpathDemo(part) : generateRoughingToolpathDemo(part);
+  cam.strategy = path.strategy;
+  cam.tool = path.tool;
+  cam.tolerance = path.tolerance;
+  cam.stepOver = path.stepOver;
+  cam.stepDown = path.stepDown;
+  cam.protectedZone = path.protectedZone;
+  cam.toolpaths.push(path);
+  cam.simulation.status = path.status;
+  cam.analysis.possibleOvercut = !!path.possibleOvercut;
+  cam.analysis.comparisonReal = false;
+  cam.analysis.status = path.possibleOvercut ? "La herramienta invade la zona protegida del STL objetivo." : "Demo CAM aproximado: comparacion real pendiente.";
+  drawToolpath(path);
+  showDesignTarget(true);
+  showToleranceOffsetDemo(true);
+  updateCamPanel();
+  ctx.setStatus(path.status, path.possibleOvercut ? "warning" : "ok");
+}
+
+function selectedToolpath() {
+  const cam = ctx.selectedModel ? ensureCam(ctx.selectedModel) : null;
+  return cam && cam.toolpaths.length ? cam.toolpaths[cam.toolpaths.length - 1] : null;
+}
+
+function drawToolpath(path) {
+  if (!path || !path.points.length) return null;
+  const geometry = new ctx.THREE.BufferGeometry().setFromPoints(path.points.map(vector));
+  const line = new ctx.THREE.Line(geometry, new ctx.THREE.LineBasicMaterial({ color: path.possibleOvercut ? 0xef4444 : 0xfacc15 }));
+  line.userData.camVisual = true;
+  ctx.scene.add(line);
+  camVisuals.toolpaths.push(line);
+  if (path.possibleOvercut) markOvercutPoints(path);
+  return line;
+}
+
+function showDesignTarget(silent) {
+  if (!ctx.selectedModel) return;
+  const mesh = ctx.selectedModel.mesh;
+  mesh.material.color.setHex(0x3b82f6);
+  mesh.material.transparent = true;
+  mesh.material.opacity = 0.42;
+  mesh.material.wireframe = false;
+  applyCamVisibility();
+  if (!silent) ctx.setStatus("Diseno objetivo visible en azul. Zona protegida: no mecanizar por dentro.", "ok");
+}
+
+function showToleranceOffsetDemo(silent) {
+  if (!ctx.requireModel()) return;
+  const params = getCamParameters();
+  const stock = createStockLocalDemo(ctx.selectedModel, params);
+  removeCamObject(camVisuals.comparison);
+  const geometry = new ctx.THREE.SphereGeometry(1, 48, 24);
+  geometry.scale(stock.protectedZone.radiusX, stock.protectedZone.radiusY, Math.max((stock.protectedZone.maxZ - stock.protectedZone.minZ) / 2, 0.1));
+  const material = new ctx.THREE.MeshStandardMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.14, wireframe: true });
+  const mesh = new ctx.THREE.Mesh(geometry, material);
+  mesh.position.copy(stock.protectedZone.center);
+  mesh.position.z = (stock.protectedZone.minZ + stock.protectedZone.maxZ) / 2;
+  mesh.userData.camVisual = true;
+  ctx.scene.add(mesh);
+  camVisuals.comparison = mesh;
+  applyCamVisibility();
+  if (!silent) ctx.setStatus(`Offset/tolerancia visible: ${params.tolerance.toFixed(2)} mm`, "ok");
+}
+
+function showMaterialToRemoveDemo(silent) {
+  if (!ctx.requireModel()) return;
+  clearRemovedMaterialVisuals();
+  const params = getCamParameters();
+  const stock = createStockLocalDemo(ctx.selectedModel, params);
+  const markers = [];
+  const zStep = Math.max(params.stepDown, params.tool.diameter);
+  const xyStep = Math.max(params.tool.diameter * 1.25, params.stepOver);
+
+  for (let z = stock.minZ; z <= stock.maxZ; z += zStep) {
+    for (let y = stock.center.y - stock.radiusY; y <= stock.center.y + stock.radiusY; y += xyStep) {
+      for (let x = stock.center.x - stock.radiusX; x <= stock.center.x + stock.radiusX; x += xyStep) {
+        const point = new ctx.THREE.Vector3(x, y, z);
+        if (!isPointInsideStockDemo(point, stock) || isPointInsideProtectedZoneDemo(point, stock.protectedZone)) continue;
+        markers.push(point);
+      }
+    }
+  }
+
+  createMarkerCloud(markers, Math.max(params.tool.diameter / 2, 0.25), 0xf97316, 0.28, camVisuals.removed);
+  const cam = ensureCam(ctx.selectedModel);
+  cam.simulation.removedMarkersCount = markers.length;
+  cam.simulation.removedCellsCount = markers.length;
+  cam.simulation.remainingCellsCount = Math.max(0, (cam.simulation.totalCells || markers.length * 2) - markers.length);
+  cam.simulation.status = "Material a remover demo visible";
+  updateCamPanel();
+  if (!silent) ctx.setStatus("Material a remover visible: stock fuera del STL + tolerancia.", "ok");
+}
+
+function showRemovedMaterialDemo(silent) {
+  return showMaterialToRemoveDemo(silent);
+}
+
+function showStockRemainingDemo(silent) {
+  if (!ctx.requireModel()) return;
+  const params = getCamParameters();
+  const stock = createStockLocalDemo(ctx.selectedModel, params);
+  removeCamObject(camVisuals.machined);
+  const markers = [];
+  const xyStep = Math.max(params.tool.diameter, params.stepOver);
+  const zMid = (stock.protectedZone.minZ + stock.protectedZone.maxZ) / 2;
+  for (let a = 0; a < Math.PI * 2; a += 0.18) {
+    markers.push(new ctx.THREE.Vector3(
+      stock.protectedZone.center.x + Math.cos(a) * stock.protectedZone.radiusX,
+      stock.protectedZone.center.y + Math.sin(a) * stock.protectedZone.radiusY,
+      zMid
+    ));
+  }
+  for (let z = stock.protectedZone.minZ; z <= stock.protectedZone.maxZ; z += Math.max(params.stepDown, 0.5)) {
+    for (let a = 0; a < Math.PI * 2; a += Math.max(0.16, xyStep / Math.max(stock.protectedZone.radiusX, stock.protectedZone.radiusY))) {
+      markers.push(new ctx.THREE.Vector3(
+        stock.protectedZone.center.x + Math.cos(a) * stock.protectedZone.radiusX,
+        stock.protectedZone.center.y + Math.sin(a) * stock.protectedZone.radiusY,
+        z
+      ));
+    }
+  }
+  const group = new ctx.THREE.Group();
+  createMarkerCloud(markers, Math.max(params.tool.diameter / 3, 0.18), 0x94a3b8, 0.24, null, group);
+  group.userData.camVisual = true;
+  ctx.scene.add(group);
+  camVisuals.machined = group;
+  showDesignTarget(true);
+  showToleranceOffsetDemo(true);
+  const cam = ensureCam(ctx.selectedModel);
+  cam.result = { type: "roughing_remaining_stock_demo", tolerance: params.tolerance, status: "Remanente aproximado, requiere acabado" };
+  cam.analysis.status = "Remanente demo: requiere acabado para llegar al diseno final.";
+  updateCamPanel();
+  applyCamVisibility();
+  if (!silent) ctx.setStatus("Stock remanente aproximado visible. Todavia falta acabado.", "warning");
+}
+
+function showMachinedStockApproximation(silent) {
+  return showStockRemainingDemo(silent);
+}
+
+function createMarkerCloud(points, radius, color, opacity, list, parent) {
+  const container = parent || new ctx.THREE.Group();
+  const max = Math.min(points.length, 1200);
+  const step = Math.max(1, Math.ceil(points.length / max));
+  for (let i = 0; i < points.length; i += step) {
+    const mesh = new ctx.THREE.Mesh(
+      new ctx.THREE.SphereGeometry(radius, 12, 8),
+      new ctx.THREE.MeshStandardMaterial({ color, transparent: true, opacity, depthWrite: false })
+    );
+    mesh.position.copy(points[i]);
+    mesh.userData.camVisual = true;
+    if (list) {
+      ctx.scene.add(mesh);
+      list.push(mesh);
+    } else {
+      container.add(mesh);
+    }
+  }
+  if (!parent && !list) ctx.scene.add(container);
+  return container;
+}
+
+function createToolMesh(tool) {
+  const group = new ctx.THREE.Group();
+  const diameter = tool.diameter;
+  const bodyLength = 18;
+  const tipRadius = Math.max(diameter * 0.55, 0.25);
+  const bodyGeometry = new ctx.THREE.CylinderGeometry(diameter / 2, diameter / 2, bodyLength, 32);
+  bodyGeometry.rotateX(Math.PI / 2);
+  const body = new ctx.THREE.Mesh(bodyGeometry, new ctx.THREE.MeshStandardMaterial({ color: 0xe5e7eb, metalness: 0.35, roughness: 0.32 }));
+  body.position.set(0, 0, tipRadius + bodyLength / 2);
+  const tip = new ctx.THREE.Mesh(new ctx.THREE.SphereGeometry(tipRadius, 24, 12), new ctx.THREE.MeshStandardMaterial({ color: 0xff4fd8, emissive: 0x831843, emissiveIntensity: 0.25 }));
+  tip.position.set(0, 0, 0);
+  group.add(body, tip);
+  group.rotation.set(0, 0, 0);
+  group.userData.camVisual = true;
+  ctx.scene.add(group);
+  return group;
+}
+
+function updateToolPosition(point) {
+  if (!camVisuals.tool || !point) return;
+  camVisuals.tool.position.copy(vector(point));
+  camVisuals.tool.rotation.set(0, 0, 0);
+}
+
+export function startCamSimulation() {
+  if (!ctx.requireModel()) return;
+  const path = selectedToolpath();
+  if (!path) {
+    ctx.setStatus("Genera una trayectoria demo primero.", "warning");
+    return;
+  }
+  stopCamSimulation("Simulacion reiniciada");
+  clearRemovedMaterialVisuals();
+  removeCamObject(camVisuals.tool);
+  camVisuals.tool = createToolMesh(path.tool);
+  camSimulation.pathPoints = path.points.map(vector);
+  camSimulation.currentIndex = 0;
+  camSimulation.isRunning = true;
+  camSimulation.isPaused = false;
+  camSimulation.lastTime = 0;
+  camSimulation.removalVisualStep = Math.max(1, Math.floor(camSimulation.pathPoints.length / 100));
+  updateToolPosition(camSimulation.pathPoints[0]);
+  const cam = ensureCam(ctx.selectedModel);
+  cam.simulation.status = `Simulacion ${path.strategy.toLowerCase()} en curso`;
+  cam.simulation.removedMarkersCount = 0;
+  updateCamPanel();
+  ctx.setStatus("Simulacion CAM iniciada. Herramienta vertical en Z.", "ok");
+}
+
+export function stepCamAnimation() {
+  if (!camSimulation.isRunning || camSimulation.isPaused || !camVisuals.tool || !camSimulation.pathPoints.length) return;
+  const now = ctx.performance.now();
+  if (now - camSimulation.lastTime < 25) return;
+  camSimulation.lastTime = now;
+  const point = camSimulation.pathPoints[camSimulation.currentIndex];
+  const path = selectedToolpath();
+  updateToolPosition(point);
+  if (path && camSimulation.currentIndex % camSimulation.removalVisualStep === 0) {
+    addRemovedMaterialMarker(point, path.tool);
+  }
+  camSimulation.currentIndex += 1;
+  if (camSimulation.currentIndex >= camSimulation.pathPoints.length) {
+    stopCamSimulation("Simulacion finalizada");
+    showStockRemainingDemo(true);
+    compareApproxMachinedStockToDesign(true);
+    ctx.setStatus("Simulacion CAM finalizada. Revisar remanente y acabado pendiente.", "ok");
+  }
+  updateCamPanel();
+}
+
+function addRemovedMaterialMarker(point, tool) {
+  const mesh = new ctx.THREE.Mesh(
+    new ctx.THREE.SphereGeometry(Math.max(tool.diameter / 2, 0.25), 12, 8),
+    new ctx.THREE.MeshStandardMaterial({ color: 0xf97316, transparent: true, opacity: 0.38, depthWrite: false })
+  );
+  mesh.position.copy(vector(point));
+  mesh.userData.camVisual = true;
+  ctx.scene.add(mesh);
+  camVisuals.removed.push(mesh);
+  const cam = ctx.selectedModel ? ensureCam(ctx.selectedModel) : null;
+  if (cam) {
+    cam.simulation.removedMarkersCount = camVisuals.removed.length;
+    cam.simulation.status = "Material removido durante simulacion";
+  }
+}
+
+export function pauseCamSimulation() {
+  if (!camSimulation.isRunning) return;
+  camSimulation.isPaused = true;
+  if (ctx.selectedModel) ensureCam(ctx.selectedModel).simulation.status = "Simulacion pausada";
+  updateCamPanel();
+}
+
+export function resumeCamSimulation() {
+  if (!camSimulation.isRunning) return;
+  camSimulation.isPaused = false;
+  if (ctx.selectedModel) ensureCam(ctx.selectedModel).simulation.status = "Simulacion en curso";
+  updateCamPanel();
+}
+
+function stopCamSimulation(status) {
+  camSimulation.isRunning = false;
+  camSimulation.isPaused = false;
+  if (ctx.selectedModel && status) ensureCam(ctx.selectedModel).simulation.status = status;
+}
+
+export function resetCamSimulation() {
+  stopCamSimulation("Simulacion reseteada");
+  camSimulation.currentIndex = 0;
+  clearRemovedMaterialVisuals();
+  if (ctx.selectedModel) {
+    const cam = ensureCam(ctx.selectedModel);
+    cam.simulation.removedMarkersCount = 0;
+    cam.simulation.removedCellsCount = 0;
+    cam.simulation.status = "Simulacion reseteada";
+  }
+  updateCamPanel();
+}
+
+export function clearCamSimulation() {
+  if (!ctx.selectedModel) return;
+  stopCamSimulation("Sin trayectoria");
+  clearCamVisualObjects(true);
+  delete camRuntimeStocks[ctx.selectedModel.id];
+  ctx.selectedModel.cam = {
+    toolpaths: [],
+    simulation: { status: "Sin trayectoria", removedMarkersCount: 0 },
+    analysis: { possibleOvercut: false, comparisonReal: false, status: "Demo CAM aproximado" },
+    result: {},
+    comparison: {}
+  };
+  ctx.applyPieceMaterial(ctx.selectedModel);
+  updateCamPanel();
+  ctx.setStatus("Simulacion CAM borrada. STL, disco y soportes se conservan.", "ok");
+}
+
+function compareApproxMachinedStockToDesign(silent) {
+  if (!ctx.requireModel()) return;
+  const cam = ensureCam(ctx.selectedModel);
+  const params = getCamParameters();
+  cam.comparison = {
+    comparedAt: new Date().toISOString(),
+    maxError: null,
+    avgError: null,
+    status: "Comparacion exacta requiere voxel/heightmap o malla mecanizada real."
+  };
+  cam.analysis.comparisonReal = false;
+  cam.analysis.status = cam.analysis.possibleOvercut
+    ? "La herramienta invade la zona protegida del STL objetivo."
+    : `Comparacion geometrica real pendiente. Tolerancia ${params.tolerance.toFixed(2)} mm.`;
+  updateCamPanel();
+  if (!silent) ctx.setStatus(cam.analysis.status, cam.analysis.possibleOvercut ? "warning" : "ok");
+}
+
+export function rebuildCamVisualsForModel(model) {
+  clearCamVisualObjects(false);
+  if (!model) return;
+  const cam = ensureCam(model);
+  cam.toolpaths.forEach(drawToolpath);
+  if (cam.result && cam.result.type) showStockRemainingDemo(true);
+  if (cam.protectedZone) showToleranceOffsetDemo(true);
+  applyCamVisibility();
+  updateCamPanel();
+}
+
+function clearRemovedMaterialVisuals() {
+  removeVisualList(camVisuals.removed);
+  removeVisualList(camVisuals.overcut);
+  if (ctx.selectedModel) {
+    const cam = ensureCam(ctx.selectedModel);
+    cam.simulation.removedMarkersCount = 0;
+  }
+}
+
+function clearCamVisualObjects(resetTool) {
+  removeVisualList(camVisuals.toolpaths);
+  removeVisualList(camVisuals.removed);
+  removeVisualList(camVisuals.overcut);
+  removeCamObject(camVisuals.tool);
+  removeCamObject(camVisuals.machined);
+  removeCamObject(camVisuals.comparison);
+  removeCamObject(camVisuals.stock);
+  camVisuals.tool = null;
+  camVisuals.machined = null;
+  camVisuals.comparison = null;
+  camVisuals.stock = null;
+  if (resetTool !== false) {
+    camSimulation.isRunning = false;
+    camSimulation.isPaused = false;
+    camSimulation.currentIndex = 0;
+    camSimulation.pathPoints = [];
+  }
+}
+
+function removeVisualList(list) {
+  list.forEach(removeCamObject);
+  list.length = 0;
+}
+
+function removeCamObject(obj) {
+  if (!obj) return;
+  ctx.scene.remove(obj);
+  if (obj.traverse) {
+    obj.traverse(child => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) child.material.dispose();
+    });
+  }
+  if (obj.geometry) obj.geometry.dispose();
+  if (obj.material) obj.material.dispose();
+}
+
+function toggleCamVisibility(key, value) {
+  ctx.camVisibility[key] = !!value;
+  applyCamVisibility();
+}
+
+function applyCamVisibility() {
+  if (ctx.disc) ctx.disc.visible = ctx.camVisibility.stock;
+  ctx.models.forEach(model => {
+    model.mesh.visible = ctx.camVisibility.design;
+    model.supports.forEach(support => support.mesh.visible = ctx.camVisibility.supports);
+  });
+  camVisuals.toolpaths.forEach(obj => obj.visible = ctx.camVisibility.toolpath);
+  camVisuals.removed.forEach(obj => obj.visible = ctx.camVisibility.removed);
+  camVisuals.overcut.forEach(obj => obj.visible = ctx.camVisibility.comparison);
+  if (camVisuals.tool) camVisuals.tool.visible = ctx.camVisibility.tool;
+  if (camVisuals.machined) camVisuals.machined.visible = ctx.camVisibility.machined;
+  if (camVisuals.comparison) camVisuals.comparison.visible = ctx.camVisibility.comparison;
+}
+
+function markOvercutPoints(path) {
+  path.points.forEach((point, index) => {
+    if (index % Math.max(1, Math.floor(path.points.length / 60)) !== 0) return;
+    const mesh = new ctx.THREE.Mesh(
+      new ctx.THREE.SphereGeometry(Math.max(path.tool.diameter * 0.4, 0.25), 12, 8),
+      new ctx.THREE.MeshStandardMaterial({ color: 0xef4444, transparent: true, opacity: 0.7 })
+    );
+    mesh.position.copy(vector(point));
+    ctx.scene.add(mesh);
+    camVisuals.overcut.push(mesh);
+  });
+}
+
+function calculatePathLength(points) {
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) total += vector(points[i]).distanceTo(vector(points[i - 1]));
+  return total;
+}
+
+function vector(data) {
+  return data && data.isVector3 ? data : new ctx.THREE.Vector3(Number(data && data.x) || 0, Number(data && data.y) || 0, Number(data && data.z) || 0);
+}
+
+function vectorData(v) {
+  return { x: Number(v.x.toFixed(3)), y: Number(v.y.toFixed(3)), z: Number(v.z.toFixed(3)) };
+}
+
+export function exportCamForJson(model) {
+  return serializeCamForPart(model);
+}
+
+export function serializeCamForPart(model) {
+  const cam = ensureCam(model);
+  return {
+    strategy: cam.strategy || getCamParameters().strategy,
+    tool: cam.tool || getToolDefinition(),
+    tolerance: cam.tolerance || numberInput("camTolerance", 0.5),
+    stepOver: cam.stepOver || numberInput("camStepOver", 1.4),
+    stepDown: cam.stepDown || numberInput("camStepDown", 1.5),
+    protectedZone: cam.protectedZone || null,
+    toolpaths: cam.toolpaths || [],
+    simulation: {
+      removedMarkersCount: cam.simulation.removedMarkersCount || 0,
+      removedCellsCount: cam.simulation.removedCellsCount || 0,
+      remainingCellsCount: cam.simulation.remainingCellsCount || 0,
+      status: cam.simulation.status || "Sin trayectoria"
+    },
+    result: cam.result || {},
+    comparison: cam.comparison || { status: "Comparacion geometrica real pendiente" },
+    analysis: {
+      possibleOvercut: !!cam.analysis.possibleOvercut,
+      comparisonReal: false,
+      remainingMaterialDemo: cam.analysis.remainingMaterialDemo !== false,
+      status: cam.analysis.status || "Demo CAM aproximado"
+    }
+  };
+}
+
+export function hydrateCamFromJson(model, camData) {
+  return restoreCamForPart(model, camData);
+}
+
+export function restoreCamForPart(model, camData) {
+  model.cam = {
+    strategy: camData && camData.strategy,
+    tool: camData && camData.tool,
+    tolerance: camData && camData.tolerance,
+    stepOver: camData && camData.stepOver,
+    stepDown: camData && camData.stepDown,
+    protectedZone: camData && camData.protectedZone,
+    toolpaths: Array.isArray(camData && camData.toolpaths) ? camData.toolpaths : [],
+    simulation: camData && camData.simulation ? camData.simulation : {},
+    result: camData && camData.result ? camData.result : {},
+    comparison: camData && camData.comparison ? camData.comparison : {},
+    analysis: camData && camData.analysis ? camData.analysis : {}
+  };
+  ensureCam(model);
+  if (model === ctx.selectedModel && ctx.currentMode === "CAM") rebuildCamVisualsForModel(model);
 }
