@@ -251,9 +251,9 @@ export function updateCamPanel() {
   const disc = ctx.document.getElementById("camDisc");
   if (disc) disc.value = `${ctx.discDiameter} x ${ctx.discHeight} mm`;
 
-  setCamText("camPointCount", active ? active.points.length : 0);
+  setCamText("camPointCount", active ? `${active.points.length} total / ${active.cutPointCount || 0} corte / ${active.rapidPointCount || 0} rapid` : 0);
   setCamText("camLayerCount", active ? active.layers || 0 : 0);
-  setCamText("camPathLength", `${(active ? active.length : 0).toFixed(2)} mm`);
+  setCamText("camPathLength", active ? `${(active.cutLength || 0).toFixed(2)} corte / ${(active.rapidLength || 0).toFixed(2)} rapid mm` : "0.00 mm");
   setCamText("camActiveTool", `${params.tool.name} · ${params.rpm} rpm · F${params.feedRate}`);
   setCamText("camEstimatedTime", `${((active ? active.estimatedTime : 0) || 0).toFixed(1)} min`);
   setCamText("camRemovedState", `${sim ? sim.removedMarkersCount || 0 : 0} huellas / ${sim ? sim.removedCellsCount || 0 : 0} celdas`);
@@ -378,39 +378,109 @@ function generateRoughingHeightmapToolpath(part) {
   const cam = ensureCam(part);
   const heightmap = cam.heightmap || generateHeightmapForPart(part);
   computeProtectedHeightmap(heightmap, params.stockToLeave);
+  const cutSegments = [];
+  const rapidSegments = [];
   const points = [];
   const removedKeys = new Set();
   let layers = 0;
   let skippedProtectedPoints = 0;
   const zTop = Math.min(ctx.discHeight / 2, heightmap.bounds.maxZ + params.tool.diameter + params.stepDown);
   const zBottom = Math.max(-ctx.discHeight / 2, heightmap.bounds.minZ);
+  const clearanceZ = Math.min(ctx.discHeight / 2 + params.tool.diameter, heightmap.bounds.maxZ + 3);
   const xyStep = Math.max(heightmap.resolution, params.stepOver);
+  let previousCutEnd = null;
 
   for (let z = zTop; z >= zBottom; z -= params.stepDown) {
     layers += 1;
     let direction = 1;
     for (let y = heightmap.bounds.minY; y <= heightmap.bounds.maxY; y += xyStep) {
-      const rowPoints = [];
+      const samples = [];
       for (let x = heightmap.bounds.minX; x <= heightmap.bounds.maxX; x += xyStep) {
         const cell = getNearestHeightmapCell(heightmap, x, y);
-        if (cell && cell.hasSurface && z <= cell.protectedZ) {
-          skippedProtectedPoints += 1;
-          continue;
-        }
-        if (cell && cell.hasSurface) removedKeys.add(`${cell.row}:${cell.col}`);
-        rowPoints.push(vectorData(new ctx.THREE.Vector3(x, y, z)));
+        samples.push({ x, y, z, cell });
       }
-      if (direction < 0) rowPoints.reverse();
-      rowPoints.forEach(point => points.push(point));
+      if (direction < 0) samples.reverse();
+      const layer = buildCutAndRapidSegmentsForLayer(z, samples, clearanceZ, previousCutEnd);
+      skippedProtectedPoints += layer.skippedProtectedPoints;
+      layer.cutCells.forEach(key => removedKeys.add(key));
+      layer.cutSegments.forEach(segment => cutSegments.push(segment));
+      layer.rapidSegments.forEach(segment => rapidSegments.push(segment));
+      layer.points.forEach(point => points.push(point));
+      previousCutEnd = layer.lastCutEnd || previousCutEnd;
       direction *= -1;
     }
   }
 
-  const path = makeHeightmapToolpath("Desbaste heightmap", params, heightmap, points, layers, false, "Desbaste heightmap 2.5D listo. No atraviesa la zona protegida del STL.");
+  const path = makeHeightmapToolpath("Desbaste heightmap", params, heightmap, points, layers, false, "Desbaste heightmap 2.5D listo. Corte separado de movimientos rapid.");
+  path.cutSegments = cutSegments;
+  path.rapidSegments = rapidSegments;
+  path.clearanceZ = Number(clearanceZ.toFixed(3));
   path.skippedProtectedPoints = skippedProtectedPoints;
+  path.cutPointCount = points.filter(point => point.moveType === "cut").length;
+  path.rapidPointCount = points.filter(point => point.moveType === "rapid").length;
+  path.cutLength = Number(calculateSegmentLength(cutSegments).toFixed(3));
+  path.rapidLength = Number(calculateSegmentLength(rapidSegments).toFixed(3));
   cam.toolpaths.push(path);
   updateHeightmapAnalysis(cam, heightmap, removedKeys.size, skippedProtectedPoints, false, path.status);
   return path;
+}
+
+function buildCutAndRapidSegmentsForLayer(layerZ, scanLineSamples, clearanceZ, previousCutEnd) {
+  const cutSegments = [];
+  const rapidSegments = [];
+  const points = [];
+  const cutCells = [];
+  let currentCut = [];
+  let lastCutEnd = previousCutEnd;
+  let skippedProtectedPoints = 0;
+
+  scanLineSamples.forEach(sample => {
+    const cell = sample.cell;
+    const protectedCell = cell && cell.hasSurface && layerZ <= cell.protectedZ;
+    const cuttable = !protectedCell;
+    const point = vectorData(new ctx.THREE.Vector3(sample.x, sample.y, layerZ));
+    if (!cuttable) {
+      skippedProtectedPoints += 1;
+      if (currentCut.length) {
+        cutSegments.push(currentCut);
+        lastCutEnd = currentCut[currentCut.length - 1];
+        currentCut = [];
+      }
+      return;
+    }
+
+    const cutPoint = Object.assign({}, point, { moveType: "cut" });
+    if (!currentCut.length) {
+      if (lastCutEnd) {
+        const rapid = createRapidLink(lastCutEnd, point, clearanceZ);
+        rapidSegments.push(rapid);
+        rapid.forEach(rapidPoint => points.push(rapidPoint));
+      }
+      currentCut.push(cutPoint);
+    } else {
+      currentCut.push(cutPoint);
+    }
+    points.push(cutPoint);
+
+    if (cell && cell.hasSurface) cutCells.push(`${cell.row}:${cell.col}`);
+  });
+
+  if (currentCut.length) {
+    cutSegments.push(currentCut);
+    lastCutEnd = currentCut[currentCut.length - 1];
+  }
+  return { cutSegments, rapidSegments, points, cutCells, skippedProtectedPoints, lastCutEnd };
+}
+
+function createRapidLink(fromPoint, toPoint, clearanceZ) {
+  const from = vector(fromPoint);
+  const to = vector(toPoint);
+  return [
+    vectorData(new ctx.THREE.Vector3(from.x, from.y, from.z)),
+    Object.assign(vectorData(new ctx.THREE.Vector3(from.x, from.y, clearanceZ)), { moveType: "rapid" }),
+    Object.assign(vectorData(new ctx.THREE.Vector3(to.x, to.y, clearanceZ)), { moveType: "rapid" }),
+    Object.assign(vectorData(new ctx.THREE.Vector3(to.x, to.y, to.z)), { moveType: "rapid" })
+  ].map(point => Object.assign(point, { moveType: "rapid" }));
 }
 
 function generateFinishingHeightmapToolpath(part) {
@@ -456,6 +526,10 @@ function makeHeightmapToolpath(strategy, params, heightmap, points, layers, over
     status,
     createdAt: new Date().toISOString()
   };
+}
+
+function calculateSegmentLength(segments) {
+  return segments.reduce((total, segment) => total + calculatePathLength(segment), 0);
 }
 
 function updateHeightmapAnalysis(cam, heightmap, machinedPoints, skippedProtectedPoints, possibleOvercut, status) {
@@ -778,6 +852,16 @@ function selectedToolpath() {
 
 function drawToolpath(path) {
   if (!path || !path.points.length) return null;
+  if (Array.isArray(path.cutSegments) || Array.isArray(path.rapidSegments)) {
+    const group = new ctx.THREE.Group();
+    drawCuttingSegments(path.cutSegments || [], group, path.possibleOvercut);
+    drawRapidSegments(path.rapidSegments || [], group);
+    group.userData.camVisual = true;
+    ctx.scene.add(group);
+    camVisuals.toolpaths.push(group);
+    if (path.possibleOvercut) markOvercutPoints(path);
+    return group;
+  }
   const geometry = new ctx.THREE.BufferGeometry().setFromPoints(path.points.map(vector));
   const line = new ctx.THREE.Line(geometry, new ctx.THREE.LineBasicMaterial({ color: path.possibleOvercut ? 0xef4444 : 0xfacc15 }));
   line.userData.camVisual = true;
@@ -785,6 +869,27 @@ function drawToolpath(path) {
   camVisuals.toolpaths.push(line);
   if (path.possibleOvercut) markOvercutPoints(path);
   return line;
+}
+
+function drawCuttingSegments(segments, parent, overcut) {
+  const material = new ctx.THREE.LineBasicMaterial({ color: overcut ? 0xef4444 : 0xfacc15, transparent: true, opacity: 0.95 });
+  segments.filter(segment => segment.length > 1).forEach(segment => {
+    const geometry = new ctx.THREE.BufferGeometry().setFromPoints(segment.map(vector));
+    const line = new ctx.THREE.Line(geometry, material);
+    line.userData.camVisual = true;
+    parent.add(line);
+  });
+}
+
+function drawRapidSegments(segments, parent) {
+  const material = new ctx.THREE.LineDashedMaterial({ color: 0xe5e7eb, transparent: true, opacity: 0.38, dashSize: 1.2, gapSize: 0.8 });
+  segments.filter(segment => segment.length > 1).forEach(segment => {
+    const geometry = new ctx.THREE.BufferGeometry().setFromPoints(segment.map(vector));
+    const line = new ctx.THREE.Line(geometry, material);
+    line.computeLineDistances();
+    line.userData.camVisual = true;
+    parent.add(line);
+  });
 }
 
 function showDesignTarget(silent) {
@@ -949,7 +1054,7 @@ export function startCamSimulation() {
   clearRemovedMaterialVisuals();
   removeCamObject(camVisuals.tool);
   camVisuals.tool = createToolMesh(path.tool);
-  camSimulation.pathPoints = path.points.map(vector);
+  camSimulation.pathPoints = path.points.map(point => Object.assign(vectorData(vector(point)), { moveType: point.moveType || "cut" }));
   camSimulation.currentIndex = 0;
   camSimulation.isRunning = true;
   camSimulation.isPaused = false;
@@ -971,8 +1076,10 @@ export function stepCamAnimation() {
   const point = camSimulation.pathPoints[camSimulation.currentIndex];
   const path = selectedToolpath();
   updateToolPosition(point);
-  if (path && camSimulation.currentIndex % camSimulation.removalVisualStep === 0) {
+  if (path && point.moveType === "cut" && camSimulation.currentIndex % camSimulation.removalVisualStep === 0) {
     addRemovedMaterialMarker(point, path.tool);
+  } else if (path && point.moveType === "rapid" && ctx.selectedModel) {
+    ensureCam(ctx.selectedModel).simulation.status = "Movimiento rapid / enlace sin corte";
   }
   camSimulation.currentIndex += 1;
   if (camSimulation.currentIndex >= camSimulation.pathPoints.length) {
@@ -1259,9 +1366,12 @@ function serializeToolpaths(toolpaths) {
   const maxSavedPoints = 5000;
   return toolpaths.map(path => {
     const points = Array.isArray(path.points) ? path.points : [];
+    const saveFullPath = points.length <= maxSavedPoints;
     return Object.assign({}, path, {
-      points: points.length <= maxSavedPoints ? points : [],
-      pointsOmitted: points.length > maxSavedPoints,
+      points: saveFullPath ? points : [],
+      cutSegments: saveFullPath ? path.cutSegments || [] : [],
+      rapidSegments: saveFullPath ? path.rapidSegments || [] : [],
+      pointsOmitted: !saveFullPath,
       originalPointCount: points.length
     });
   });
