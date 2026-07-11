@@ -126,6 +126,12 @@ function exposeCamWindowFunctions() {
     runDentalRoughingOperation,
     simulateCurrentDentalOperation,
     addDentalOperation,
+    selectDentalOperation,
+    setDentalOperationTool,
+    setDentalOperationStrategy,
+    acceptDentalOperation,
+    skipDentalOperation,
+    deleteDentalOperation,
     toggleCamAdvancedPanel,
     setCamViewPreset,
     toggleRapidMoves,
@@ -227,6 +233,7 @@ function ensureCam(model) {
   if (!model.cam) model.cam = {};
   if (!Array.isArray(model.cam.toolpaths)) model.cam.toolpaths = [];
   if (!Array.isArray(model.cam.operations)) model.cam.operations = [];
+  if (!model.cam.activeOperationId && model.cam.operations.length) model.cam.activeOperationId = model.cam.operations[0].id;
   if (!model.cam.simulation) model.cam.simulation = {};
   if (!model.cam.analysis) model.cam.analysis = {};
   if (!model.cam.result) model.cam.result = {};
@@ -446,6 +453,146 @@ function toggleCamAdvancedPanel() {
   const panel = ctx.document.getElementById("camAdvancedPanel");
   if (!panel) return;
   panel.style.display = panel.style.display === "none" ? "block" : "none";
+}
+
+function ensureDentalOperations(model) {
+  const cam = ensureCam(model);
+  if (!cam.operations.length) cam.operations.push(createDentalOperation("Desbaste", "roughing", "flat_2_0"));
+  if (!cam.activeOperationId) cam.activeOperationId = cam.operations[0].id;
+  return cam.operations;
+}
+
+function renderCamOperationList() {
+  const list = ctx.document.getElementById("camOperationList");
+  if (!list) return;
+  if (!ctx.selectedModel) {
+    list.innerHTML = '<div class="empty-list">Importa y selecciona una pieza.</div>';
+    return;
+  }
+  const cam = ensureCam(ctx.selectedModel);
+  const operations = ensureDentalOperations(ctx.selectedModel);
+  list.innerHTML = operations.map((operation, index) => {
+    const tool = findTool(operation.toolId);
+    const strategy = findStrategy(operation.strategyId);
+    const active = operation.id === cam.activeOperationId;
+    const statusClass = `${active ? "active" : ""} ${operation.possibleOvercut ? "bad" : operation.status === "Aplicada" ? "ok" : ""}`;
+    const toolOptions = TOOLS.map(item => `<option value="${item.id}"${item.id === operation.toolId ? " selected" : ""}>${item.name}</option>`).join("");
+    const strategyOptions = STRATEGIES.map(item => `<option value="${item.id}"${item.id === operation.strategyId ? " selected" : ""}>${item.name}</option>`).join("");
+    return `<div class="cam-operation ${statusClass}" onclick="selectDentalOperation('${operation.id}')"><div><b>${index + 1}. ${operation.name}</b><span>${tool.name} - ${strategy.name}</span><div class="cam-operation-controls"><select onclick="event.stopPropagation()" onchange="setDentalOperationTool('${operation.id}',this.value)">${toolOptions}</select><select onclick="event.stopPropagation()" onchange="setDentalOperationStrategy('${operation.id}',this.value)">${strategyOptions}</select></div><div class="cam-operation-actions"><button class="secondary" onclick="event.stopPropagation();simulateCurrentDentalOperation('${operation.id}')">Simular</button><button class="success" onclick="event.stopPropagation();runDentalRoughingOperation('${operation.id}')">Aplicar</button><button class="secondary" onclick="event.stopPropagation();acceptDentalOperation('${operation.id}')">Aceptar</button><button class="secondary" onclick="event.stopPropagation();skipDentalOperation('${operation.id}')">Saltar</button><button class="danger" onclick="event.stopPropagation();deleteDentalOperation('${operation.id}')">Eliminar</button></div></div><strong>${operation.status}</strong></div>`;
+  }).join("");
+}
+
+function activeDentalOperation(id) {
+  if (!ctx.selectedModel) return null;
+  const operations = ensureDentalOperations(ctx.selectedModel);
+  const cam = ensureCam(ctx.selectedModel);
+  if (id) cam.activeOperationId = id;
+  return operations.find(operation => operation.id === cam.activeOperationId) || operations.find(operation => operation.status === "Pendiente") || operations[operations.length - 1];
+}
+
+function selectDentalOperation(id) {
+  if (!ctx.selectedModel) return;
+  const operation = activeDentalOperation(id);
+  applyOperationSettings(operation);
+  renderCamOperationList();
+  updateCamPanel();
+}
+
+function setDentalOperationTool(id, toolId) {
+  const operation = activeDentalOperation(id);
+  if (!operation) return;
+  operation.toolId = findTool(toolId).id;
+  if (operation.status === "Aplicada") operation.status = "Pendiente";
+  applyOperationSettings(operation);
+  renderCamOperationList();
+}
+
+function setDentalOperationStrategy(id, strategyId) {
+  const operation = activeDentalOperation(id);
+  if (!operation) return;
+  operation.strategyId = findStrategy(strategyId).id;
+  if (operation.status === "Aplicada") operation.status = "Pendiente";
+  applyOperationSettings(operation);
+  renderCamOperationList();
+}
+
+function acceptDentalOperation(id) {
+  const operation = activeDentalOperation(id);
+  if (!operation) return;
+  operation.status = "Aplicada";
+  operation.possibleOvercut = false;
+  moveToNextPendingOperation();
+  renderCamOperationList();
+}
+
+function skipDentalOperation(id) {
+  const operation = activeDentalOperation(id);
+  if (!operation) return;
+  operation.status = "Saltada";
+  moveToNextPendingOperation();
+  renderCamOperationList();
+}
+
+function deleteDentalOperation(id) {
+  if (!ctx.selectedModel) return;
+  const cam = ensureCam(ctx.selectedModel);
+  cam.operations = ensureDentalOperations(ctx.selectedModel).filter(operation => operation.id !== id);
+  if (!cam.operations.length) cam.operations.push(createDentalOperation("Desbaste", "roughing", "flat_2_0"));
+  cam.activeOperationId = cam.operations[0].id;
+  renderCamOperationList();
+}
+
+function moveToNextPendingOperation() {
+  if (!ctx.selectedModel) return;
+  const cam = ensureCam(ctx.selectedModel);
+  const next = ensureDentalOperations(ctx.selectedModel).find(operation => operation.status === "Pendiente");
+  if (next) cam.activeOperationId = next.id;
+}
+
+function runDentalRoughingOperation(id) {
+  if (!ctx.requireModel()) return;
+  const operation = activeDentalOperation(id);
+  applyOperationSettings(operation);
+  if (!ensureCam(ctx.selectedModel).voxelStock) prepareDentalCamStock();
+  generateDemoToolpath();
+  const path = selectedToolpath();
+  if (!path) return;
+  operation.status = "Aplicando";
+  renderCamOperationList();
+  const result = applyToolpathToVoxelStock(path);
+  operation.status = result.possibleOvercut ? "Revisar" : "Aplicada";
+  operation.removedVoxels = result.removedVoxels;
+  operation.possibleOvercut = result.possibleOvercut;
+  if (!result.possibleOvercut) moveToNextPendingOperation();
+  showMachinedVoxelStock(true);
+  renderCamOperationList();
+  ctx.setStatus(result.possibleOvercut ? "Operacion aplicada con alerta: posible sobrecorte." : `Operacion aplicada: ${result.removedVoxels} voxels removidos.`, result.possibleOvercut ? "warning" : "ok");
+}
+
+function simulateCurrentDentalOperation(id) {
+  if (!ctx.requireModel()) return;
+  const operation = activeDentalOperation(id);
+  applyOperationSettings(operation);
+  if (!selectedToolpath()) generateDemoToolpath();
+  if (!ensureCam(ctx.selectedModel).voxelStock) createVoxelStockForPart(ctx.selectedModel);
+  setCamViewPreset("simulation", true);
+  startCamSimulation();
+}
+
+function addDentalOperation() {
+  if (!ctx.requireModel()) return;
+  const cam = ensureCam(ctx.selectedModel);
+  const next = ensureDentalOperations(ctx.selectedModel).length;
+  const presets = [
+    createDentalOperation("Desbaste", "roughing", "flat_2_0"),
+    createDentalOperation("Semiacabado", "roughing", "flat_1_0"),
+    createDentalOperation("Acabado", "finishing", "ball_0_6"),
+    createDentalOperation("Detalle", "finishing", "ball_0_3")
+  ];
+  const operation = presets[Math.min(next, presets.length - 1)];
+  cam.operations.push(operation);
+  cam.activeOperationId = operation.id;
+  renderCamOperationList();
 }
 
 function heightmapResolution() {
@@ -962,13 +1109,56 @@ function updateVoxelStockVisual(showRemoved) {
   const includeRemoved = showRemoved !== undefined ? showRemoved : camViewState.showRemovedVoxels;
   const group = new ctx.THREE.Group();
   group.userData.camVisual = true;
-  addVoxelInstances(group, stock.voxels.filter(v => v.occupied && !v.protected), stock.voxelSize, 0xd1d5db, 0.16, 5200);
-  addVoxelInstances(group, stock.voxels.filter(v => v.occupied && v.protected), stock.voxelSize, 0x38bdf8, 0.24, 1800);
+  addVoxelSurfaceMesh(group, stock.voxels.filter(v => v.occupied && !v.protected), stock, 0xd1d5db, 0.26);
+  addVoxelSurfaceMesh(group, stock.voxels.filter(v => v.occupied && v.protected), stock, 0x38bdf8, 0.20);
   if (includeRemoved) addVoxelInstances(group, stock.voxels.filter(v => v.removed), stock.voxelSize, 0xf97316, 0.40, 1800);
   ctx.scene.add(group);
   camVisuals.voxelStock = group;
   updateOvercutWarningVisual(stock);
   applyCamVisibility();
+}
+
+function addVoxelSurfaceMesh(parent, voxels, stock, color, opacity) {
+  if (!voxels.length) return;
+  const voxelSet = new Set(voxels.map(voxelKey));
+  const positions = [];
+  const normals = [];
+  const indices = [];
+  const half = stock.voxelSize / 2;
+  const faces = [
+    { d: [1, 0, 0], n: [1, 0, 0], c: [[half, -half, -half], [half, half, -half], [half, half, half], [half, -half, half]] },
+    { d: [-1, 0, 0], n: [-1, 0, 0], c: [[-half, half, -half], [-half, -half, -half], [-half, -half, half], [-half, half, half]] },
+    { d: [0, 1, 0], n: [0, 1, 0], c: [[-half, half, -half], [half, half, -half], [half, half, half], [-half, half, half]] },
+    { d: [0, -1, 0], n: [0, -1, 0], c: [[half, -half, -half], [-half, -half, -half], [-half, -half, half], [half, -half, half]] },
+    { d: [0, 0, 1], n: [0, 0, 1], c: [[-half, -half, half], [half, -half, half], [half, half, half], [-half, half, half]] },
+    { d: [0, 0, -1], n: [0, 0, -1], c: [[-half, half, -half], [half, half, -half], [half, -half, -half], [-half, -half, -half]] }
+  ];
+  voxels.forEach(voxel => {
+    faces.forEach(face => {
+      const neighbor = `${voxel.ix + face.d[0]}:${voxel.iy + face.d[1]}:${voxel.iz + face.d[2]}`;
+      if (voxelSet.has(neighbor)) return;
+      const base = positions.length / 3;
+      face.c.forEach(corner => {
+        positions.push(voxel.x + corner[0], voxel.y + corner[1], voxel.z + corner[2]);
+        normals.push(face.n[0], face.n[1], face.n[2]);
+      });
+      indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    });
+  });
+  if (!positions.length) return;
+  const geometry = new ctx.THREE.BufferGeometry();
+  geometry.setAttribute("position", new ctx.THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("normal", new ctx.THREE.Float32BufferAttribute(normals, 3));
+  geometry.setIndex(indices);
+  geometry.computeBoundingSphere();
+  const material = new ctx.THREE.MeshStandardMaterial({ color, transparent: true, opacity, roughness: 0.72, metalness: 0.04, side: ctx.THREE.DoubleSide, depthWrite: false });
+  const mesh = new ctx.THREE.Mesh(geometry, material);
+  mesh.userData.camVisual = true;
+  parent.add(mesh);
+}
+
+function voxelKey(voxel) {
+  return `${voxel.ix}:${voxel.iy}:${voxel.iz}`;
 }
 
 function addVoxelInstances(parent, voxels, voxelSize, color, opacity, maxInstances) {
@@ -1965,6 +2155,7 @@ export function serializeCamForPart(model) {
     stepDown: cam.stepDown || numberInput("camStepDown", 1.5),
     settings,
     operations: cam.operations || [],
+    activeOperationId: cam.activeOperationId || null,
     protectedZone: cam.protectedZone || null,
     heightmapInfo: cam.heightmapInfo || (cam.heightmap ? heightmapInfo(cam.heightmap) : null),
     voxelInfo: serializeVoxelInfoForPart(model),
@@ -2025,6 +2216,7 @@ export function restoreCamForPart(model, camData) {
     stepDown: camData && camData.stepDown,
     protectedZone: camData && camData.protectedZone,
     operations: Array.isArray(camData && camData.operations) ? camData.operations : [],
+    activeOperationId: camData && camData.activeOperationId,
     heightmapInfo: camData && camData.heightmapInfo,
     voxelInfo: camData && camData.voxelInfo,
     toolpaths: Array.isArray(camData && camData.toolpaths) ? camData.toolpaths : [],
