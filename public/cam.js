@@ -10,6 +10,8 @@ let camViewState = {
   currentPreset: "simulation"
 };
 let camOperationCounter = 1;
+const CAM_REMOVAL_PRECISION_MM = 0.1;
+const CAM_MAX_SWEEP_SAMPLES = 9000;
 
 export function initCam(context) {
   ctx = context;
@@ -360,10 +362,11 @@ function applyToolpathToVoxelStock(path) {
   const stock = cam.voxelStock || createVoxelStockForPart(ctx.selectedModel);
   const before = stock.removedVoxels || 0;
   const cutPoints = (path.points || []).filter(point => (point.moveType || "cut") === "cut");
-  const maxSamples = 2600;
-  const step = Math.max(1, Math.ceil(cutPoints.length / maxSamples));
-  for (let i = 0; i < cutPoints.length; i += step) {
-    removeVoxelsByToolAtPoint(cutPoints[i], path.tool, true);
+  const totalLength = Math.max(path.cutLength || calculatePathLength(cutPoints), CAM_REMOVAL_PRECISION_MM);
+  const precisionStep = Math.max(CAM_REMOVAL_PRECISION_MM, totalLength / CAM_MAX_SWEEP_SAMPLES);
+  for (let i = 0; i < cutPoints.length; i += 1) {
+    const previous = i > 0 ? cutPoints[i - 1] : cutPoints[i];
+    removeVoxelsAlongToolMove(previous, cutPoints[i], path.tool, precisionStep, true);
   }
   updateVoxelInfoForPart(ctx.selectedModel);
   updateOvercutWarningVisual(stock);
@@ -920,7 +923,7 @@ function createVoxelStockForSelectedPart() {
 function createVoxelStockForPart(part) {
   const cam = ensureCam(part);
   let voxelSize = voxelSizeInput();
-  const maxVoxels = 10000;
+  const maxVoxels = 160000;
   const discRadius = ctx.discDiameter / 2;
   const bounds = {
     minX: Number((-discRadius).toFixed(3)),
@@ -1192,14 +1195,13 @@ function removeVoxelsByToolAtPoint(point, tool, deferUpdate) {
   if (!ctx.selectedModel) return 0;
   const cam = ensureCam(ctx.selectedModel);
   const stock = cam.voxelStock || createVoxelStockForPart(ctx.selectedModel);
-  const params = getCamParameters();
   const p = vector(point);
   let removed = 0;
   let overcut = false;
   const overcutPoints = [];
   stock.voxels.forEach(voxel => {
     if (!voxel.occupied) return;
-    const insideTool = isBallTool(tool) ? isVoxelInsideBallTool(voxel, p, tool) : isVoxelInsideFlatTool(voxel, p, tool, params.stepDown, stock.voxelSize);
+    const insideTool = isBallTool(tool) ? isVoxelInsideBallTool(voxel, p, tool, stock.voxelSize) : isVoxelInsideFlatTool(voxel, p, tool, stock.voxelSize);
     if (!insideTool) return;
     if (voxel.protected) {
       overcut = true;
@@ -1215,11 +1217,27 @@ function removeVoxelsByToolAtPoint(point, tool, deferUpdate) {
     stock.overcutPoints = (stock.overcutPoints || []).concat(overcutPoints).slice(-160);
   }
   stock.removedVoxels += removed;
-  stock.remainingVoxels = stock.voxels.filter(v => v.occupied).length;
+  if (!deferUpdate) stock.remainingVoxels = stock.voxels.filter(v => v.occupied).length;
   cam.analysis.possibleOvercut = cam.analysis.possibleOvercut || overcut;
   if (!deferUpdate) {
     updateVoxelInfoForPart(ctx.selectedModel);
     if (overcut) updateOvercutWarningVisual(stock);
+  }
+  return removed;
+}
+
+function removeVoxelsAlongToolMove(fromPoint, toPoint, tool, precisionStep, deferUpdate) {
+  const from = vector(fromPoint);
+  const to = vector(toPoint);
+  const distance = from.distanceTo(to);
+  const samples = Math.max(1, Math.ceil(distance / Math.max(precisionStep || CAM_REMOVAL_PRECISION_MM, CAM_REMOVAL_PRECISION_MM)));
+  let removed = 0;
+  for (let i = 0; i <= samples; i += 1) {
+    removed += removeVoxelsByToolAtPoint(from.clone().lerp(to, i / samples), tool, true);
+  }
+  if (!deferUpdate) {
+    updateVoxelInfoForPart(ctx.selectedModel);
+    updateVoxelStockVisual(false);
   }
   return removed;
 }
@@ -1236,24 +1254,25 @@ function updateOvercutWarningVisual(stock) {
 }
 
 function isBallTool(tool) {
-  return String(tool.id || tool.type || tool.name || "").toLowerCase().includes("ball") || String(tool.name || "").toLowerCase().includes("esfer");
+  return String(tool.type || "").toLowerCase() === "ball" || String(tool.id || "").toLowerCase().includes("ball") || String(tool.name || "").toLowerCase().includes("esfer");
 }
 
-function isVoxelInsideFlatTool(voxel, point, tool, stepDown, voxelSize) {
+function isVoxelInsideFlatTool(voxel, point, tool, voxelSize) {
   const radius = tool.diameter / 2;
   const dx = voxel.x - point.x;
   const dy = voxel.y - point.y;
   const radial = Math.sqrt(dx * dx + dy * dy);
-  const height = Math.max(stepDown, voxelSize);
-  return radial <= radius && voxel.z <= point.z + voxelSize * 0.5 && voxel.z >= point.z - height - voxelSize * 0.5;
+  const fluteLength = Math.max(Number(tool.fluteLength) || ctx.discHeight, voxelSize);
+  return radial <= radius + voxelSize * 0.35 && voxel.z >= point.z - voxelSize * 0.5 && voxel.z <= point.z + fluteLength + voxelSize * 0.5;
 }
 
-function isVoxelInsideBallTool(voxel, point, tool) {
+function isVoxelInsideBallTool(voxel, point, tool, voxelSize) {
   const radius = tool.diameter / 2;
+  const centerZ = point.z + radius;
   const dx = voxel.x - point.x;
   const dy = voxel.y - point.y;
-  const dz = voxel.z - point.z;
-  return Math.sqrt(dx * dx + dy * dy + dz * dz) <= radius;
+  const dz = voxel.z - centerZ;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz) <= radius + voxelSize * 0.35;
 }
 
 function simulateVoxelToolpath() {
@@ -1837,15 +1856,26 @@ function createMarkerCloud(points, radius, color, opacity, list, parent) {
 function createToolMesh(tool) {
   const group = new ctx.THREE.Group();
   const diameter = tool.diameter;
-  const bodyLength = 18;
-  const tipRadius = Math.max(diameter * 0.55, 0.25);
+  const radius = diameter / 2;
+  const bodyLength = Math.max(Number(tool.fluteLength) || 10, 8);
   const bodyGeometry = new ctx.THREE.CylinderGeometry(diameter / 2, diameter / 2, bodyLength, 32);
   bodyGeometry.rotateX(Math.PI / 2);
   const body = new ctx.THREE.Mesh(bodyGeometry, new ctx.THREE.MeshStandardMaterial({ color: 0xe5e7eb, metalness: 0.35, roughness: 0.32 }));
-  body.position.set(0, 0, tipRadius + bodyLength / 2);
-  const tip = new ctx.THREE.Mesh(new ctx.THREE.SphereGeometry(tipRadius, 24, 12), new ctx.THREE.MeshStandardMaterial({ color: 0xff4fd8, emissive: 0x831843, emissiveIntensity: 0.25 }));
-  tip.position.set(0, 0, 0);
-  group.add(body, tip);
+  body.position.set(0, 0, bodyLength / 2);
+  group.add(body);
+  if (isBallTool(tool)) {
+    body.position.z = radius + bodyLength / 2;
+    const tip = new ctx.THREE.Mesh(new ctx.THREE.SphereGeometry(radius, 32, 16), new ctx.THREE.MeshStandardMaterial({ color: 0xff4fd8, emissive: 0x831843, emissiveIntensity: 0.25 }));
+    tip.position.set(0, 0, radius);
+    group.add(tip);
+  } else {
+    const endThickness = Math.max(0.08, diameter * 0.08);
+    const endGeometry = new ctx.THREE.CylinderGeometry(radius, radius, endThickness, 32);
+    endGeometry.rotateX(Math.PI / 2);
+    const end = new ctx.THREE.Mesh(endGeometry, new ctx.THREE.MeshStandardMaterial({ color: 0xff4fd8, emissive: 0x831843, emissiveIntensity: 0.18 }));
+    end.position.set(0, 0, endThickness / 2);
+    group.add(end);
+  }
   group.rotation.set(0, 0, 0);
   group.userData.camVisual = true;
   ctx.scene.add(group);
@@ -1876,12 +1906,13 @@ export function startCamSimulation() {
   camSimulation.lastTime = 0;
   camSimulation.removalVisualStep = Math.max(1, Math.floor(camSimulation.pathPoints.length / 100));
   camSimulation.voxelVisualStep = Math.max(1, Math.floor(camSimulation.pathPoints.length / 40));
+  camSimulation.lastCutPoint = null;
   updateToolPosition(camSimulation.pathPoints[0]);
   const cam = ensureCam(ctx.selectedModel);
   cam.simulation.status = `Simulacion ${path.strategy.toLowerCase()} en curso`;
   cam.simulation.removedMarkersCount = 0;
   updateCamPanel();
-  ctx.setStatus("Simulacion CAM iniciada. Herramienta vertical en Z.", "ok");
+  ctx.setStatus(`Simulacion CAM iniciada con ${path.tool.name}: barrido de herramienta a ${CAM_REMOVAL_PRECISION_MM.toFixed(1)} mm.`, "ok");
 }
 
 export function stepCamAnimation() {
@@ -1892,13 +1923,15 @@ export function stepCamAnimation() {
   const point = camSimulation.pathPoints[camSimulation.currentIndex];
   const path = selectedToolpath();
   updateToolPosition(point);
-  if (path && point.moveType === "cut" && camSimulation.currentIndex % camSimulation.removalVisualStep === 0) {
-    addRemovedMaterialMarker(point, path.tool);
+  if (path && point.moveType === "cut") {
+    if (camSimulation.currentIndex % camSimulation.removalVisualStep === 0) addRemovedMaterialMarker(point, path.tool);
     if (ctx.selectedModel && ensureCam(ctx.selectedModel).voxelStock) {
-      removeVoxelsByToolAtPoint(point, path.tool);
+      removeVoxelsAlongToolMove(camSimulation.lastCutPoint || point, point, path.tool, CAM_REMOVAL_PRECISION_MM);
+      camSimulation.lastCutPoint = point;
       if (camSimulation.currentIndex % camSimulation.voxelVisualStep === 0) updateVoxelStockVisual();
     }
   } else if (path && point.moveType === "rapid" && ctx.selectedModel) {
+    camSimulation.lastCutPoint = null;
     ensureCam(ctx.selectedModel).simulation.status = "Movimiento rapid / enlace sin corte";
   }
   camSimulation.currentIndex += 1;
