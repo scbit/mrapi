@@ -1257,10 +1257,10 @@ function updateVoxelStockVisual(showRemoved) {
   const occupiedVoxels = stock.voxels.filter(v => v.occupied);
   const visibleVoxels = stockVoxelsForCurrentScope(occupiedVoxels, stock);
   if (hasMachining) {
-    const resultOpacity = camViewState.currentPreset === "machined" && !lineMode ? 1 : 0.92;
+    const resultOpacity = camViewState.stockScope === "part" && !lineMode ? 0.34 : camViewState.currentPreset === "machined" && !lineMode ? 0.62 : 0.82;
     addVoxelSurfaceMesh(group, visibleVoxels, stock, 0xd1d5db, lineMode ? 0.42 : resultOpacity, lineMode, occupiedVoxels);
   } else {
-    if (camViewState.stockScope === "part") addVoxelSurfaceMesh(group, visibleVoxels, stock, 0xd1d5db, lineMode ? 0.36 : 0.72, lineMode, occupiedVoxels);
+    if (camViewState.stockScope === "part") addVoxelSurfaceMesh(group, visibleVoxels, stock, 0xd1d5db, lineMode ? 0.36 : 0.34, lineMode, occupiedVoxels);
     else addSmoothDiscStockMesh(group, stock, 0xd1d5db, lineMode ? 0.28 : 0.86, lineMode);
   }
   if (includeRemoved) addVoxelInstances(group, stock.voxels.filter(v => v.removed), stock.voxelSize, 0xf97316, 0.40, 1800);
@@ -1458,7 +1458,37 @@ function removeVoxelsAlongToolMove(fromPoint, toPoint, tool, precisionStep, defe
 function updateOvercutWarningVisual(stock) {
   removeCamObject(camVisuals.overcutWarning);
   camVisuals.overcutWarning = null;
-  if (stock && stock.possibleOvercut) updateCamPanel();
+  if (!stock || !stock.possibleOvercut) return;
+  const points = (stock.overcutPoints || []).slice(-220);
+  if (points.length) {
+    const group = new ctx.THREE.Group();
+    group.userData.camVisual = true;
+    const radius = Math.max(stock.voxelSize * 0.42, 0.18);
+    const geometry = new ctx.THREE.SphereGeometry(radius, 12, 8);
+    const material = new ctx.THREE.MeshStandardMaterial({
+      color: 0xef4444,
+      emissive: 0x7f1d1d,
+      roughness: 0.42,
+      metalness: 0.02,
+      transparent: false,
+      depthTest: true,
+      depthWrite: true
+    });
+    const mesh = new ctx.THREE.InstancedMesh(geometry, material, points.length);
+    const matrix = new ctx.THREE.Matrix4();
+    points.forEach((point, index) => {
+      const p = vector(point);
+      matrix.makeTranslation(p.x, p.y, p.z);
+      mesh.setMatrixAt(index, matrix);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.renderOrder = 80;
+    mesh.userData.camVisual = true;
+    group.add(mesh);
+    ctx.scene.add(group);
+    camVisuals.overcutWarning = group;
+  }
+  updateCamPanel();
 }
 
 function isBallTool(tool) {
@@ -1541,7 +1571,7 @@ function setCamViewPreset(preset, silent) {
   if (ctx.disc) ctx.disc.visible = showStock && preset !== "machined" && camViewState.stockScope !== "part";
   if (ctx.selectedModel) {
     showDesignTarget(true);
-    const designOpacity = preset === "machined" ? 0.24 : preset === "stock" ? 0.42 : 0.72;
+    const designOpacity = preset === "machined" || camViewState.stockScope === "part" ? 1 : preset === "stock" ? 0.68 : 0.86;
     prepareDesignMeshForCam(ctx.selectedModel, designOpacity, camViewState.stockRenderMode === "lines" && preset === "machined");
   }
   hideSceneBoxHelpers();
@@ -1676,12 +1706,12 @@ function prepareDesignMeshForCam(model, opacity, wireframe) {
   model.mesh.frustumCulled = false;
   model.mesh.renderOrder = 50;
   model.mesh.material.color.setHex(0x3b82f6);
-  model.mesh.material.transparent = true;
+  model.mesh.material.transparent = opacity < 0.99;
   model.mesh.material.opacity = opacity;
   model.mesh.material.wireframe = !!wireframe;
   model.mesh.material.visible = true;
-  model.mesh.material.depthTest = false;
-  model.mesh.material.depthWrite = false;
+  model.mesh.material.depthTest = true;
+  model.mesh.material.depthWrite = opacity >= 0.99;
   model.mesh.material.side = ctx.THREE.DoubleSide;
   model.mesh.material.needsUpdate = true;
 }
