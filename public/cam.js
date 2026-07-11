@@ -170,6 +170,7 @@ function exposeCamWindowFunctions() {
     toggleCamAdvancedPanel,
     setCamViewPreset,
     setCamStockRenderMode,
+    focusCamOnSelectedResult,
     toggleRapidMoves,
     hideCamHelpers,
     generateDemoToolpath,
@@ -1375,6 +1376,7 @@ function showMachinedVoxelStock(silent) {
   cam.result = { type: "voxel_remaining_stock", status: "Stock remanente real: voxels ocupados despues del mecanizado acumulado." };
   updateCamPanel();
   const stock = ensureCam(ctx.selectedModel).voxelStock;
+  if (!silent) focusCamOnSelectedResult();
   if (!silent) ctx.setStatus(stock.possibleOvercut ? "Stock remanente real visible con advertencia de sobrecorte." : "Stock remanente real visible: material actual menos desbastado.", stock.possibleOvercut ? "warning" : "ok");
 }
 
@@ -1415,7 +1417,27 @@ function setCamViewPreset(preset, silent) {
   if (camVisuals.tool) camVisuals.tool.visible = showTool;
   if (camVisuals.overcutWarning) camVisuals.overcutWarning.visible = preset !== "stock";
   applyToolpathMoveVisibility();
+  if (preset === "machined" && !silent) focusCamOnSelectedResult();
   if (!silent) ctx.setStatus(`Vista: ${camViewLabel(preset)}.`, "ok");
+}
+
+function focusCamOnSelectedResult() {
+  if (!ctx.selectedModel || !ctx.camera || !ctx.controls) return;
+  ctx.selectedModel.mesh.updateMatrixWorld(true);
+  const box = new ctx.THREE.Box3().setFromObject(ctx.selectedModel.mesh);
+  const center = box.getCenter(new ctx.THREE.Vector3());
+  const size = box.getSize(new ctx.THREE.Vector3());
+  const radius = Math.max(size.length() * 0.65, 14);
+  const currentDirection = new ctx.THREE.Vector3().subVectors(ctx.camera.position, ctx.controls.target);
+  if (currentDirection.lengthSq() < 0.01) currentDirection.set(1, -1, 0.65);
+  currentDirection.normalize();
+  const target = center.clone();
+  target.z = Math.max(center.z, -ctx.discHeight / 2 + 2);
+  ctx.controls.target.copy(target);
+  ctx.camera.position.copy(target).add(currentDirection.multiplyScalar(radius * 2.2));
+  ctx.camera.near = 0.03;
+  ctx.camera.updateProjectionMatrix();
+  ctx.controls.update();
 }
 
 function setCamStockRenderMode(mode) {
