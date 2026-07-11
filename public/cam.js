@@ -8,7 +8,8 @@ let camViewState = {
   showRapid: false,
   showRemovedVoxels: false,
   currentPreset: "simulation",
-  stockRenderMode: "solid"
+  stockRenderMode: "solid",
+  stockScope: "disc"
 };
 let camOperationCounter = 1;
 const CAM_REMOVAL_PRECISION_MM = 0.1;
@@ -51,6 +52,11 @@ function setupCamControls() {
   const camPanel = ctx.document.querySelector(".panel.right .cam-only");
   if (camPanel && !ctx.document.getElementById("camHeightmapResolution")) {
     camPanel.insertAdjacentHTML("afterbegin", '<div class="cam-workflow"><h3>CAM Dental</h3><div class="cam-primary-actions"><button class="success" onclick="prepareDentalCamStock()">Preparar stock</button><button class="success" onclick="runDentalRoughingOperation()">Desbastar</button><button class="secondary" onclick="simulateCurrentDentalOperation()">Simular</button><button class="secondary" onclick="showMachinedVoxelStock()">Pieza resultante</button></div><div class="cam-view-tabs"><button class="secondary" data-cam-view="design" onclick="setCamViewPreset(\'design\')">Diseño</button><button class="secondary" data-cam-view="stock" onclick="setCamViewPreset(\'stock\')">Stock inicial</button><button class="secondary" data-cam-view="simulation" onclick="setCamViewPreset(\'simulation\')">Mecanizado</button><button class="secondary" data-cam-view="machined" onclick="setCamViewPreset(\'machined\')">Pieza resultante</button></div><div class="cam-render-tabs"><button class="active" data-cam-render="solid" onclick="setCamStockRenderMode(\'solid\')">Sólido</button><button class="secondary" data-cam-render="lines" onclick="setCamStockRenderMode(\'lines\')">Líneas</button></div><div class="info-card"><h3>Operaciones</h3><div id="camOperationList" class="cam-operation-list"></div><button class="secondary" onclick="addDentalOperation()">Agregar operacion</button></div><label>Resolucion stock mm</label><input id="camVoxelSize" type="number" value="1.00" step="0.10" min="0.5" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="secondary" onclick="toggleCamAdvancedPanel()">Ajustes avanzados</button></div><div id="camAdvancedPanel" class="cam-advanced-panel"><label>Vista CAM avanzada</label><button class="secondary" onclick="setCamViewPreset(\'toolpath\')">Solo trayectoria</button><label><input id="camShowRapidMoves" type="checkbox" onchange="toggleRapidMoves(this.checked)"> Mostrar movimientos rapid</label><button class="secondary" onclick="hideCamHelpers()">Ocultar ayudas CAM</button><label>Resolucion heightmap mm</label><input id="camHeightmapResolution" type="number" value="1.00" step="0.10" min="0.25" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="secondary" onclick="generateHeightmapForSelectedPart()">Generar heightmap</button><button class="secondary" onclick="showHeightmap()">Mostrar heightmap</button><button class="secondary" onclick="showRoughingTolerance()">Mostrar tolerancia</button><button class="secondary" onclick="resetVoxelStock()">Reset stock voxel</button></div>');
+  }
+
+  if (camPanel && !ctx.document.querySelector("[data-cam-scope]")) {
+    const renderTabs = camPanel.querySelector(".cam-render-tabs");
+    if (renderTabs) renderTabs.insertAdjacentHTML("afterend", '<div class="cam-render-tabs"><button class="active" data-cam-scope="disc" onclick="setCamStockScope(\'disc\')">Disco</button><button class="secondary" data-cam-scope="part" onclick="setCamStockScope(\'part\')">Solo pieza</button></div>');
   }
 
   relabelCamButtons();
@@ -170,6 +176,7 @@ function exposeCamWindowFunctions() {
     toggleCamAdvancedPanel,
     setCamViewPreset,
     setCamStockRenderMode,
+    setCamStockScope,
     focusCamOnSelectedResult,
     toggleRapidMoves,
     hideCamHelpers,
@@ -1247,17 +1254,29 @@ function updateVoxelStockVisual(showRemoved) {
   group.userData.camVisual = true;
   const hasMachining = stock.voxels.some(v => v.removed);
   const lineMode = camViewState.stockRenderMode === "lines";
+  const occupiedVoxels = stock.voxels.filter(v => v.occupied);
+  const visibleVoxels = stockVoxelsForCurrentScope(occupiedVoxels, stock);
   if (hasMachining) {
     const resultOpacity = camViewState.currentPreset === "machined" && !lineMode ? 1 : 0.92;
-    addVoxelSurfaceMesh(group, stock.voxels.filter(v => v.occupied), stock, 0xd1d5db, lineMode ? 0.42 : resultOpacity, lineMode);
+    addVoxelSurfaceMesh(group, visibleVoxels, stock, 0xd1d5db, lineMode ? 0.42 : resultOpacity, lineMode, occupiedVoxels);
   } else {
-    addSmoothDiscStockMesh(group, stock, 0xd1d5db, lineMode ? 0.28 : 0.86, lineMode);
+    if (camViewState.stockScope === "part") addVoxelSurfaceMesh(group, visibleVoxels, stock, 0xd1d5db, lineMode ? 0.36 : 0.72, lineMode, occupiedVoxels);
+    else addSmoothDiscStockMesh(group, stock, 0xd1d5db, lineMode ? 0.28 : 0.86, lineMode);
   }
   if (includeRemoved) addVoxelInstances(group, stock.voxels.filter(v => v.removed), stock.voxelSize, 0xf97316, 0.40, 1800);
   ctx.scene.add(group);
   camVisuals.voxelStock = group;
   updateOvercutWarningVisual(stock);
   applyCamVisibility();
+}
+
+function stockVoxelsForCurrentScope(voxels, stock) {
+  if (camViewState.stockScope !== "part" || !ctx.selectedModel || !ctx.selectedModel.mesh) return voxels;
+  ctx.selectedModel.mesh.updateMatrixWorld(true);
+  const box = new ctx.THREE.Box3().setFromObject(ctx.selectedModel.mesh);
+  const margin = Math.max((stock && stock.voxelSize ? stock.voxelSize : 1) * 3, getToolDefinition().diameter * 2, 3);
+  box.expandByScalar(margin);
+  return voxels.filter(voxel => box.containsPoint(new ctx.THREE.Vector3(voxel.x, voxel.y, voxel.z)));
 }
 
 function addSmoothDiscStockMesh(parent, stock, color, opacity, lineMode) {
@@ -1289,9 +1308,9 @@ function addSmoothDiscStockMesh(parent, stock, color, opacity, lineMode) {
   }
 }
 
-function addVoxelSurfaceMesh(parent, voxels, stock, color, opacity, lineMode) {
+function addVoxelSurfaceMesh(parent, voxels, stock, color, opacity, lineMode, neighborVoxels) {
   if (!voxels.length) return;
-  const voxelSet = new Set(voxels.map(voxelKey));
+  const voxelSet = new Set((neighborVoxels || voxels).map(voxelKey));
   const positions = [];
   const normals = [];
   const indices = [];
@@ -1519,7 +1538,7 @@ function setCamViewPreset(preset, silent) {
   ctx.camVisibility.machined = preset === "machined";
   ctx.camVisibility.comparison = false;
 
-  if (ctx.disc) ctx.disc.visible = showStock && preset !== "machined";
+  if (ctx.disc) ctx.disc.visible = showStock && preset !== "machined" && camViewState.stockScope !== "part";
   if (ctx.selectedModel) {
     showDesignTarget(true);
     const designOpacity = preset === "machined" ? 0.24 : preset === "stock" ? 0.42 : 0.72;
@@ -1567,9 +1586,22 @@ function setCamStockRenderMode(mode) {
   ctx.setStatus(`Vista de stock: ${camViewState.stockRenderMode === "lines" ? "líneas" : "sólido"}.`, "ok");
 }
 
+function setCamStockScope(scope) {
+  camViewState.stockScope = scope === "part" ? "part" : "disc";
+  updateCamRenderButtons();
+  if (ctx.selectedModel && ensureCam(ctx.selectedModel).voxelStock) updateVoxelStockVisual(false);
+  if (camViewState.currentPreset) setCamViewPreset(camViewState.currentPreset, true);
+  ctx.setStatus(camViewState.stockScope === "part" ? "Vista local: pieza original + stock remanente, sin paredes del disco." : "Vista de disco completo activada.", "ok");
+}
+
 function updateCamRenderButtons() {
   ctx.document.querySelectorAll("[data-cam-render]").forEach(button => {
     const active = button.dataset.camRender === camViewState.stockRenderMode;
+    button.classList.toggle("active", active);
+    button.classList.toggle("secondary", !active);
+  });
+  ctx.document.querySelectorAll("[data-cam-scope]").forEach(button => {
+    const active = button.dataset.camScope === camViewState.stockScope;
     button.classList.toggle("active", active);
     button.classList.toggle("secondary", !active);
   });
@@ -2355,7 +2387,7 @@ function toggleCamVisibility(key, value) {
 }
 
 function applyCamVisibility() {
-  if (ctx.disc) ctx.disc.visible = ctx.camVisibility.stock && camViewState.currentPreset !== "machined";
+  if (ctx.disc) ctx.disc.visible = ctx.camVisibility.stock && camViewState.currentPreset !== "machined" && camViewState.stockScope !== "part";
   ctx.models.forEach(model => {
     model.mesh.visible = ctx.camVisibility.design;
     model.supports.forEach(support => support.mesh.visible = ctx.camVisibility.supports);
