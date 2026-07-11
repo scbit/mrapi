@@ -12,6 +12,7 @@ export function initCam(context) {
   camRuntimeStocks = context.camRuntimeStocks;
   camVisuals.heightmap = camVisuals.heightmap || [];
   camVisuals.tolerance = camVisuals.tolerance || [];
+  camVisuals.voxelStock = camVisuals.voxelStock || null;
   setupCamControls();
   exposeCamWindowFunctions();
 }
@@ -38,7 +39,7 @@ function setupCamControls() {
 
   const camPanel = ctx.document.querySelector(".panel.right .cam-only");
   if (camPanel && !ctx.document.getElementById("camHeightmapResolution")) {
-    camPanel.insertAdjacentHTML("afterbegin", '<label>Resolucion heightmap mm</label><input id="camHeightmapResolution" type="number" value="1.00" step="0.10" min="0.25" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="success" onclick="generateHeightmapForSelectedPart()">Generar heightmap</button><button class="secondary" onclick="showHeightmap()">Mostrar heightmap</button><button class="secondary" onclick="showRoughingTolerance()">Mostrar tolerancia desbaste</button>');
+    camPanel.insertAdjacentHTML("afterbegin", '<label>Resolucion heightmap mm</label><input id="camHeightmapResolution" type="number" value="1.00" step="0.10" min="0.25" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="success" onclick="generateHeightmapForSelectedPart()">Generar heightmap</button><button class="secondary" onclick="showHeightmap()">Mostrar heightmap</button><button class="secondary" onclick="showRoughingTolerance()">Mostrar tolerancia desbaste</button><label>Resolucion voxel mm</label><input id="camVoxelSize" type="number" value="1.00" step="0.10" min="0.5" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="success" onclick="createVoxelStockForSelectedPart()">Crear stock voxel</button><button class="secondary" onclick="showVoxelStock()">Mostrar stock voxel</button><button class="secondary" onclick="simulateVoxelToolpath()">Simular desbaste voxel</button><button class="secondary" onclick="showMachinedVoxelStock()">Ver stock mecanizado</button><button class="secondary" onclick="resetVoxelStock()">Reset stock voxel</button>');
   }
 
   relabelCamButtons();
@@ -92,6 +93,16 @@ function exposeCamWindowFunctions() {
     showRemainingStockFromHeightmap,
     clearHeightmapVisuals,
     simulateHeightmapToolpath,
+    createVoxelStockForSelectedPart,
+    createVoxelStockForPart,
+    classifyProtectedVoxels,
+    showVoxelStock,
+    hideVoxelStock,
+    updateVoxelStockVisual,
+    removeVoxelsByToolAtPoint,
+    simulateVoxelToolpath,
+    resetVoxelStock,
+    showMachinedVoxelStock,
     generateDemoToolpath,
     startCamSimulation,
     pauseCamSimulation,
@@ -192,6 +203,7 @@ function ensureCam(model) {
   if (!model.cam.analysis) model.cam.analysis = {};
   if (!model.cam.result) model.cam.result = {};
   if (!model.cam.comparison) model.cam.comparison = {};
+  if (!model.cam.voxelInfo) model.cam.voxelInfo = null;
   model.cam.simulation = Object.assign({
     removedMarkersCount: 0,
     status: "Sin trayectoria"
@@ -206,6 +218,11 @@ function ensureCam(model) {
     protectedPoints: 0,
     skippedProtectedPoints: 0,
     coverageDemo: 0,
+    totalVoxels: 0,
+    removedVoxels: 0,
+    remainingVoxels: 0,
+    protectedVoxels: 0,
+    voxelSize: 0,
     status: "Demo CAM aproximado"
   }, model.cam.analysis);
   return model.cam;
@@ -266,6 +283,7 @@ export function updateCamPanel() {
   setCamText("camAvgError", "Pendiente");
   setCamText("camComparisonStatus", analysis ? analysis.status : "Comparacion geometrica real pendiente");
   setCamText("camConceptNote", params.strategy === "Acabado" ? "Acabado demo: pasada fina pendiente de superficie real." : "Desbaste demo: deja tolerancia, requiere acabado.");
+  updateVoxelMetrics();
 }
 
 function heightmapResolution() {
@@ -667,6 +685,292 @@ function clearHeightmapVisuals() {
   removeVisualList(camVisuals.tolerance);
 }
 
+function voxelSizeInput() {
+  return Math.max(0.5, numberInput("camVoxelSize", 1));
+}
+
+function createVoxelStockForSelectedPart() {
+  if (!ctx.requireModel()) return null;
+  const stock = createVoxelStockForPart(ctx.selectedModel);
+  showVoxelStock(true);
+  updateCamPanel();
+  ctx.setStatus(`Stock voxel creado: ${stock.totalVoxels} voxels, ${stock.protectedVoxels} protegidos.`, stock.resolutionAdjusted ? "warning" : "ok");
+  return stock;
+}
+
+function createVoxelStockForPart(part) {
+  const cam = ensureCam(part);
+  const params = getCamParameters();
+  const heightmap = cam.heightmap || generateHeightmapForPart(part);
+  computeProtectedHeightmap(heightmap, params.stockToLeave);
+  part.mesh.updateMatrixWorld(true);
+  const box = new ctx.THREE.Box3().setFromObject(part.mesh);
+  let voxelSize = voxelSizeInput();
+  const marginXY = 4;
+  const marginZ = 4;
+  const maxVoxels = 10000;
+  const bounds = {
+    minX: Number((box.min.x - marginXY).toFixed(3)),
+    maxX: Number((box.max.x + marginXY).toFixed(3)),
+    minY: Number((box.min.y - marginXY).toFixed(3)),
+    maxY: Number((box.max.y + marginXY).toFixed(3)),
+    minZ: Number((Math.max(-ctx.discHeight / 2, box.min.z - marginZ)).toFixed(3)),
+    maxZ: Number((Math.min(ctx.discHeight / 2, box.max.z + marginZ)).toFixed(3))
+  };
+  let dims = voxelDimensions(bounds, voxelSize);
+  let resolutionAdjusted = false;
+  while (dims.total > maxVoxels) {
+    voxelSize = Number((voxelSize + 0.25).toFixed(2));
+    dims = voxelDimensions(bounds, voxelSize);
+    resolutionAdjusted = true;
+  }
+
+  const voxels = [];
+  let id = 0;
+  for (let iz = 0; iz < dims.nz; iz += 1) {
+    const z = bounds.minZ + iz * voxelSize + voxelSize / 2;
+    for (let iy = 0; iy < dims.ny; iy += 1) {
+      const y = bounds.minY + iy * voxelSize + voxelSize / 2;
+      for (let ix = 0; ix < dims.nx; ix += 1) {
+        const x = bounds.minX + ix * voxelSize + voxelSize / 2;
+        voxels.push({
+          id,
+          ix,
+          iy,
+          iz,
+          x: Number(x.toFixed(3)),
+          y: Number(y.toFixed(3)),
+          z: Number(z.toFixed(3)),
+          occupied: true,
+          protected: false,
+          removed: false
+        });
+        id += 1;
+      }
+    }
+  }
+
+  cam.voxelStock = {
+    voxelSize,
+    bounds,
+    dims,
+    voxels,
+    totalVoxels: voxels.length,
+    removedVoxels: 0,
+    remainingVoxels: voxels.length,
+    protectedVoxels: 0,
+    possibleOvercut: false,
+    resolutionAdjusted,
+    generatedAt: new Date().toISOString()
+  };
+  classifyProtectedVoxels(part);
+  updateVoxelInfoForPart(part);
+  return cam.voxelStock;
+}
+
+function voxelDimensions(bounds, voxelSize) {
+  const nx = Math.max(1, Math.ceil((bounds.maxX - bounds.minX) / voxelSize));
+  const ny = Math.max(1, Math.ceil((bounds.maxY - bounds.minY) / voxelSize));
+  const nz = Math.max(1, Math.ceil((bounds.maxZ - bounds.minZ) / voxelSize));
+  return { nx, ny, nz, total: nx * ny * nz };
+}
+
+function classifyProtectedVoxels(part) {
+  const cam = ensureCam(part);
+  const stock = cam.voxelStock;
+  if (!stock) return null;
+  const params = getCamParameters();
+  const heightmap = cam.heightmap || generateHeightmapForPart(part);
+  computeProtectedHeightmap(heightmap, params.stockToLeave);
+  let protectedVoxels = 0;
+  stock.voxels.forEach(voxel => {
+    const cell = getNearestHeightmapCell(heightmap, voxel.x, voxel.y);
+    voxel.protected = !!(cell && cell.hasSurface && voxel.z <= cell.protectedZ);
+    if (voxel.protected) protectedVoxels += 1;
+  });
+  stock.protectedVoxels = protectedVoxels;
+  updateVoxelInfoForPart(part);
+  return stock;
+}
+
+function showVoxelStock(silent) {
+  if (!ctx.requireModel()) return;
+  const cam = ensureCam(ctx.selectedModel);
+  if (!cam.voxelStock) createVoxelStockForPart(ctx.selectedModel);
+  updateVoxelStockVisual();
+  showDesignTarget(true);
+  if (!silent) ctx.setStatus("Stock voxel visible: gris remanente, naranja removido, celeste protegido.", "ok");
+}
+
+function hideVoxelStock() {
+  removeCamObject(camVisuals.voxelStock);
+  camVisuals.voxelStock = null;
+}
+
+function updateVoxelStockVisual(showRemoved) {
+  if (!ctx.selectedModel) return;
+  const cam = ensureCam(ctx.selectedModel);
+  const stock = cam.voxelStock;
+  hideVoxelStock();
+  if (!stock) return;
+  const group = new ctx.THREE.Group();
+  group.userData.camVisual = true;
+  addVoxelInstances(group, stock.voxels.filter(v => v.occupied && !v.protected), stock.voxelSize, 0xd1d5db, 0.34, 5200);
+  addVoxelInstances(group, stock.voxels.filter(v => v.occupied && v.protected), stock.voxelSize, 0x38bdf8, 0.18, 1800);
+  if (showRemoved) addVoxelInstances(group, stock.voxels.filter(v => v.removed), stock.voxelSize, 0xf97316, 0.26, 2400);
+  ctx.scene.add(group);
+  camVisuals.voxelStock = group;
+  applyCamVisibility();
+}
+
+function addVoxelInstances(parent, voxels, voxelSize, color, opacity, maxInstances) {
+  if (!voxels.length) return;
+  const count = Math.min(voxels.length, maxInstances);
+  const step = Math.max(1, Math.ceil(voxels.length / count));
+  const geometry = new ctx.THREE.BoxGeometry(voxelSize * 0.92, voxelSize * 0.92, voxelSize * 0.92);
+  const material = new ctx.THREE.MeshStandardMaterial({ color, transparent: true, opacity, depthWrite: false });
+  const mesh = new ctx.THREE.InstancedMesh(geometry, material, count);
+  const matrix = new ctx.THREE.Matrix4();
+  let index = 0;
+  for (let i = 0; i < voxels.length && index < count; i += step) {
+    matrix.makeTranslation(voxels[i].x, voxels[i].y, voxels[i].z);
+    mesh.setMatrixAt(index, matrix);
+    index += 1;
+  }
+  mesh.count = index;
+  mesh.userData.camVisual = true;
+  parent.add(mesh);
+}
+
+function removeVoxelsByToolAtPoint(point, tool) {
+  if (!ctx.selectedModel) return 0;
+  const cam = ensureCam(ctx.selectedModel);
+  const stock = cam.voxelStock || createVoxelStockForPart(ctx.selectedModel);
+  const params = getCamParameters();
+  const p = vector(point);
+  let removed = 0;
+  let overcut = false;
+  stock.voxels.forEach(voxel => {
+    if (!voxel.occupied) return;
+    const insideTool = isBallTool(tool) ? isVoxelInsideBallTool(voxel, p, tool) : isVoxelInsideFlatTool(voxel, p, tool, params.stepDown, stock.voxelSize);
+    if (!insideTool) return;
+    if (voxel.protected) {
+      overcut = true;
+      return;
+    }
+    voxel.occupied = false;
+    voxel.removed = true;
+    removed += 1;
+  });
+  if (overcut) stock.possibleOvercut = true;
+  stock.removedVoxels += removed;
+  stock.remainingVoxels = stock.voxels.filter(v => v.occupied).length;
+  cam.analysis.possibleOvercut = cam.analysis.possibleOvercut || overcut;
+  updateVoxelInfoForPart(ctx.selectedModel);
+  return removed;
+}
+
+function isBallTool(tool) {
+  return String(tool.id || tool.type || tool.name || "").toLowerCase().includes("ball") || String(tool.name || "").toLowerCase().includes("esfer");
+}
+
+function isVoxelInsideFlatTool(voxel, point, tool, stepDown, voxelSize) {
+  const radius = tool.diameter / 2;
+  const dx = voxel.x - point.x;
+  const dy = voxel.y - point.y;
+  const radial = Math.sqrt(dx * dx + dy * dy);
+  const height = Math.max(stepDown, voxelSize);
+  return radial <= radius && voxel.z <= point.z + voxelSize * 0.5 && voxel.z >= point.z - height - voxelSize * 0.5;
+}
+
+function isVoxelInsideBallTool(voxel, point, tool) {
+  const radius = tool.diameter / 2;
+  const dx = voxel.x - point.x;
+  const dy = voxel.y - point.y;
+  const dz = voxel.z - point.z;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz) <= radius;
+}
+
+function simulateVoxelToolpath() {
+  if (!ctx.requireModel()) return;
+  if (!selectedToolpath()) generateDemoToolpath();
+  if (!ensureCam(ctx.selectedModel).voxelStock) createVoxelStockForPart(ctx.selectedModel);
+  showVoxelStock(true);
+  startCamSimulation();
+}
+
+function resetVoxelStock() {
+  if (!ctx.requireModel()) return;
+  createVoxelStockForPart(ctx.selectedModel);
+  updateVoxelStockVisual();
+  updateCamPanel();
+  ctx.setStatus("Stock voxel reseteado.", "ok");
+}
+
+function showMachinedVoxelStock(silent) {
+  if (!ctx.requireModel()) return;
+  if (!ensureCam(ctx.selectedModel).voxelStock) createVoxelStockForPart(ctx.selectedModel);
+  updateVoxelStockVisual(true);
+  showDesignTarget(true);
+  updateCamPanel();
+  const stock = ensureCam(ctx.selectedModel).voxelStock;
+  if (!silent) ctx.setStatus(stock.possibleOvercut ? "Stock mecanizado visible con advertencia de sobrecorte." : "Stock mecanizado voxel visible.", stock.possibleOvercut ? "warning" : "ok");
+}
+
+function updateVoxelInfoForPart(part) {
+  const cam = ensureCam(part);
+  const stock = cam.voxelStock;
+  if (!stock) return null;
+  stock.removedVoxels = stock.voxels.filter(v => v.removed).length;
+  stock.remainingVoxels = stock.voxels.filter(v => v.occupied).length;
+  stock.protectedVoxels = stock.voxels.filter(v => v.protected).length;
+  cam.voxelInfo = serializeVoxelInfoForPart(part);
+  cam.analysis.totalVoxels = stock.totalVoxels;
+  cam.analysis.removedVoxels = stock.removedVoxels;
+  cam.analysis.remainingVoxels = stock.remainingVoxels;
+  cam.analysis.protectedVoxels = stock.protectedVoxels;
+  cam.analysis.voxelSize = stock.voxelSize;
+  cam.analysis.coverageDemo = stock.totalVoxels ? stock.removedVoxels / stock.totalVoxels * 100 : cam.analysis.coverageDemo;
+  cam.analysis.possibleOvercut = cam.analysis.possibleOvercut || stock.possibleOvercut;
+  cam.analysis.status = stock.possibleOvercut ? "Posible sobrecorte voxel detectado." : `Stock voxel: ${stock.remainingVoxels} remanentes / ${stock.removedVoxels} removidos.`;
+  return cam.voxelInfo;
+}
+
+function updateVoxelMetrics() {
+  const cam = ctx.selectedModel ? ensureCam(ctx.selectedModel) : null;
+  if (!cam || !cam.voxelInfo) return;
+  const info = cam.voxelInfo;
+  setCamText("camRemovedState", `${info.removedVoxels} removidos / ${info.totalVoxels} voxels`);
+  setCamText("camRemovedCount", `${info.remainingVoxels} remanentes / ${info.protectedVoxels} protegidos`);
+  setCamText("camOvercut", info.possibleOvercut ? "Si - voxel protegido tocado" : "No detectado");
+  setCamText("camRemaining", `Voxel ${info.voxelSize.toFixed(2)} mm Â· cobertura ${info.coverageDemo.toFixed(1)}%`);
+  setCamText("camComparisonStatus", info.status || "Stock voxel listo");
+}
+
+function serializeVoxelInfoForPart(part) {
+  const stock = ensureCam(part).voxelStock;
+  if (!stock) return ensureCam(part).voxelInfo || null;
+  return {
+    voxelSize: stock.voxelSize,
+    totalVoxels: stock.totalVoxels,
+    removedVoxels: stock.removedVoxels,
+    remainingVoxels: stock.remainingVoxels,
+    protectedVoxels: stock.protectedVoxels,
+    possibleOvercut: !!stock.possibleOvercut,
+    coverageDemo: stock.totalVoxels ? Number((stock.removedVoxels / stock.totalVoxels * 100).toFixed(1)) : 0,
+    bounds: stock.bounds,
+    generatedAt: stock.generatedAt,
+    status: stock.resolutionAdjusted ? "Resolucion voxel ajustada para rendimiento." : "Stock voxel local listo."
+  };
+}
+
+function restoreVoxelInfoForPart(model, camData) {
+  if (!camData || !camData.voxelInfo) return;
+  const cam = ensureCam(model);
+  cam.voxelInfo = camData.voxelInfo;
+  cam.analysis.status = "Regenerar stock voxel para visualizar simulacion completa.";
+}
+
 function computeProtectedZoneDemo(part, tolerance, tool) {
   part.mesh.updateMatrixWorld(true);
   const box = new ctx.THREE.Box3().setFromObject(part.mesh);
@@ -1060,6 +1364,7 @@ export function startCamSimulation() {
   camSimulation.isPaused = false;
   camSimulation.lastTime = 0;
   camSimulation.removalVisualStep = Math.max(1, Math.floor(camSimulation.pathPoints.length / 100));
+  camSimulation.voxelVisualStep = Math.max(1, Math.floor(camSimulation.pathPoints.length / 40));
   updateToolPosition(camSimulation.pathPoints[0]);
   const cam = ensureCam(ctx.selectedModel);
   cam.simulation.status = `Simulacion ${path.strategy.toLowerCase()} en curso`;
@@ -1078,12 +1383,17 @@ export function stepCamAnimation() {
   updateToolPosition(point);
   if (path && point.moveType === "cut" && camSimulation.currentIndex % camSimulation.removalVisualStep === 0) {
     addRemovedMaterialMarker(point, path.tool);
+    if (ctx.selectedModel && ensureCam(ctx.selectedModel).voxelStock) {
+      removeVoxelsByToolAtPoint(point, path.tool);
+      if (camSimulation.currentIndex % camSimulation.voxelVisualStep === 0) updateVoxelStockVisual();
+    }
   } else if (path && point.moveType === "rapid" && ctx.selectedModel) {
     ensureCam(ctx.selectedModel).simulation.status = "Movimiento rapid / enlace sin corte";
   }
   camSimulation.currentIndex += 1;
   if (camSimulation.currentIndex >= camSimulation.pathPoints.length) {
     stopCamSimulation("Simulacion finalizada");
+    if (ctx.selectedModel && ensureCam(ctx.selectedModel).voxelStock) updateVoxelStockVisual();
     showRemainingStockFromHeightmap(true);
     compareApproxMachinedStockToDesign(true);
     ctx.setStatus("Simulacion CAM finalizada. Revisar remanente y acabado pendiente.", "ok");
@@ -1150,7 +1460,9 @@ export function clearCamSimulation() {
     simulation: { status: "Sin trayectoria", removedMarkersCount: 0 },
     analysis: { possibleOvercut: false, comparisonReal: false, status: "Demo CAM aproximado" },
     result: {},
-    comparison: {}
+    comparison: {},
+    voxelInfo: null,
+    voxelStock: null
   };
   ctx.applyPieceMaterial(ctx.selectedModel);
   updateCamPanel();
@@ -1205,10 +1517,12 @@ function clearCamVisualObjects(resetTool) {
   removeCamObject(camVisuals.machined);
   removeCamObject(camVisuals.comparison);
   removeCamObject(camVisuals.stock);
+  removeCamObject(camVisuals.voxelStock);
   camVisuals.tool = null;
   camVisuals.machined = null;
   camVisuals.comparison = null;
   camVisuals.stock = null;
+  camVisuals.voxelStock = null;
   if (resetTool !== false) {
     camSimulation.isRunning = false;
     camSimulation.isPaused = false;
@@ -1254,6 +1568,7 @@ function applyCamVisibility() {
   if (camVisuals.tool) camVisuals.tool.visible = ctx.camVisibility.tool;
   if (camVisuals.machined) camVisuals.machined.visible = ctx.camVisibility.machined;
   if (camVisuals.comparison) camVisuals.comparison.visible = ctx.camVisibility.comparison;
+  if (camVisuals.voxelStock) camVisuals.voxelStock.visible = ctx.camVisibility.stock || ctx.camVisibility.machined;
 }
 
 function markOvercutPoints(path) {
@@ -1301,7 +1616,8 @@ export function getCamSettings() {
     rpm: Number(params.rpm),
     feedRate: Number(params.feedRate),
     stockToLeave: Number(params.stockToLeave.toFixed(3)),
-    heightmapResolution: Number(heightmapResolution().toFixed(3))
+    heightmapResolution: Number(heightmapResolution().toFixed(3)),
+    voxelSize: Number(voxelSizeInput().toFixed(3))
   };
 }
 
@@ -1323,6 +1639,7 @@ export function applyCamSettings(settings) {
   setInputValue("camFeedRate", String(settings.feedRate || findMaterial(settings.materialId).roughingFeed));
   setInputValue("camStockToLeave", Number(settings.stockToLeave || findStrategy(settings.strategyId).stockToLeave || 0).toFixed(2));
   if (settings.heightmapResolution) setInputValue("camHeightmapResolution", Number(settings.heightmapResolution).toFixed(2));
+  if (settings.voxelSize) setInputValue("camVoxelSize", Number(settings.voxelSize).toFixed(2));
   updateCamPanel();
 }
 
@@ -1338,6 +1655,7 @@ export function serializeCamForPart(model) {
     settings,
     protectedZone: cam.protectedZone || null,
     heightmapInfo: cam.heightmapInfo || (cam.heightmap ? heightmapInfo(cam.heightmap) : null),
+    voxelInfo: serializeVoxelInfoForPart(model),
     toolpaths: serializeToolpaths(cam.toolpaths || []),
     simulation: {
       removedMarkersCount: cam.simulation.removedMarkersCount || 0,
@@ -1357,6 +1675,11 @@ export function serializeCamForPart(model) {
       protectedPoints: cam.analysis.protectedPoints || 0,
       skippedProtectedPoints: cam.analysis.skippedProtectedPoints || 0,
       coverageDemo: cam.analysis.coverageDemo || 0,
+      totalVoxels: cam.analysis.totalVoxels || 0,
+      removedVoxels: cam.analysis.removedVoxels || 0,
+      remainingVoxels: cam.analysis.remainingVoxels || 0,
+      protectedVoxels: cam.analysis.protectedVoxels || 0,
+      voxelSize: cam.analysis.voxelSize || 0,
       status: cam.analysis.status || "Demo CAM aproximado"
     }
   };
@@ -1390,6 +1713,7 @@ export function restoreCamForPart(model, camData) {
     stepDown: camData && camData.stepDown,
     protectedZone: camData && camData.protectedZone,
     heightmapInfo: camData && camData.heightmapInfo,
+    voxelInfo: camData && camData.voxelInfo,
     toolpaths: Array.isArray(camData && camData.toolpaths) ? camData.toolpaths : [],
     simulation: camData && camData.simulation ? camData.simulation : {},
     result: camData && camData.result ? camData.result : {},
@@ -1400,5 +1724,6 @@ export function restoreCamForPart(model, camData) {
   if (model.cam.heightmapInfo && !model.cam.heightmap) {
     model.cam.analysis.status = "Regenere heightmap para visualizar trayectoria completa.";
   }
+  restoreVoxelInfoForPart(model, camData);
   if (model === ctx.selectedModel && ctx.currentMode === "CAM") rebuildCamVisualsForModel(model);
 }
