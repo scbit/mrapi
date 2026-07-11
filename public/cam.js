@@ -949,6 +949,11 @@ function showMachinedVoxelStock(silent) {
 
 function setCamViewPreset(preset, silent) {
   camViewState.currentPreset = preset;
+  if (preset === "design") {
+    showDesignTargetOnly();
+    if (!silent) ctx.setStatus("Vista CAM: diseno objetivo original visible.", "ok");
+    return;
+  }
   const showStock = preset === "stock" || preset === "simulation" || preset === "machined";
   const showToolpath = preset === "toolpath" || preset === "simulation";
   const showTool = preset === "simulation";
@@ -967,9 +972,38 @@ function setCamViewPreset(preset, silent) {
   camVisuals.tolerance.forEach(obj => obj.visible = false);
   if (camVisuals.machined) camVisuals.machined.visible = preset === "machined";
   if (camVisuals.tool) camVisuals.tool.visible = showTool;
-  if (camVisuals.overcutWarning) camVisuals.overcutWarning.visible = true;
+  if (camVisuals.overcutWarning) camVisuals.overcutWarning.visible = preset !== "stock";
   applyToolpathMoveVisibility();
   if (!silent) ctx.setStatus(`Vista CAM: ${preset}`, "ok");
+}
+
+function showDesignTargetOnly() {
+  ctx.models.forEach(model => {
+    if (!model.mesh) return;
+    model.mesh.visible = true;
+    if (model.mesh.material) {
+      model.mesh.material.color.setHex(0x3b82f6);
+      model.mesh.material.transparent = true;
+      model.mesh.material.opacity = 0.58;
+      model.mesh.material.wireframe = false;
+      model.mesh.material.needsUpdate = true;
+    }
+  });
+  if (ctx.selectedModel && ctx.selectedModel.mesh) ctx.selectedModel.mesh.visible = true;
+  if (camVisuals.voxelStock) camVisuals.voxelStock.visible = false;
+  camVisuals.toolpaths.forEach(obj => obj.visible = false);
+  camVisuals.removed.forEach(obj => obj.visible = false);
+  camVisuals.overcut.forEach(obj => obj.visible = false);
+  camVisuals.heightmap.forEach(obj => obj.visible = false);
+  camVisuals.tolerance.forEach(obj => obj.visible = false);
+  if (camVisuals.tool) camVisuals.tool.visible = false;
+  if (camVisuals.machined) camVisuals.machined.visible = false;
+  if (camVisuals.comparison) camVisuals.comparison.visible = false;
+  if (camVisuals.stock) camVisuals.stock.visible = false;
+  if (camVisuals.overcutWarning) camVisuals.overcutWarning.visible = false;
+  camViewState.showRapid = false;
+  const input = ctx.document.getElementById("camShowRapidMoves");
+  if (input) input.checked = false;
 }
 
 function toggleRapidMoves(show) {
