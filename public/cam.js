@@ -980,16 +980,28 @@ function setCamViewPreset(preset, silent) {
 function showDesignTargetOnly() {
   ctx.models.forEach(model => {
     if (!model.mesh) return;
+    let parent = model.mesh.parent;
+    while (parent) {
+      parent.visible = true;
+      parent = parent.parent;
+    }
     model.mesh.visible = true;
+    model.mesh.frustumCulled = false;
+    model.mesh.renderOrder = 5;
     if (model.mesh.material) {
       model.mesh.material.color.setHex(0x3b82f6);
       model.mesh.material.transparent = true;
-      model.mesh.material.opacity = 0.58;
+      model.mesh.material.opacity = 0.92;
       model.mesh.material.wireframe = false;
+      model.mesh.material.visible = true;
+      model.mesh.material.depthTest = true;
+      model.mesh.material.depthWrite = true;
+      model.mesh.material.side = ctx.THREE.DoubleSide;
       model.mesh.material.needsUpdate = true;
     }
   });
   if (ctx.selectedModel && ctx.selectedModel.mesh) ctx.selectedModel.mesh.visible = true;
+  hideSceneBoxHelpers();
   if (camVisuals.voxelStock) camVisuals.voxelStock.visible = false;
   camVisuals.toolpaths.forEach(obj => obj.visible = false);
   camVisuals.removed.forEach(obj => obj.visible = false);
@@ -1004,6 +1016,12 @@ function showDesignTargetOnly() {
   camViewState.showRapid = false;
   const input = ctx.document.getElementById("camShowRapidMoves");
   if (input) input.checked = false;
+}
+
+function hideSceneBoxHelpers() {
+  ctx.scene.traverse(obj => {
+    if (obj && (obj.type === "BoxHelper" || obj.isBoxHelper)) obj.visible = false;
+  });
 }
 
 function toggleRapidMoves(show) {
