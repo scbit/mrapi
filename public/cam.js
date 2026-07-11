@@ -12,6 +12,7 @@ let camViewState = {
 let camOperationCounter = 1;
 const CAM_REMOVAL_PRECISION_MM = 0.1;
 const CAM_MAX_SWEEP_SAMPLES = 9000;
+const CAM_SIMULATION_POINTS_PER_FRAME = 10;
 
 export function initCam(context) {
   ctx = context;
@@ -972,6 +973,7 @@ function createVoxelStockForPart(part) {
     bounds,
     dims,
     voxels,
+    voxelIndex: new Map(voxels.map(voxel => [voxelKey(voxel), voxel])),
     totalVoxels: voxels.length,
     removedVoxels: 0,
     remainingVoxels: voxels.length,
@@ -1196,10 +1198,11 @@ function removeVoxelsByToolAtPoint(point, tool, deferUpdate) {
   const cam = ensureCam(ctx.selectedModel);
   const stock = cam.voxelStock || createVoxelStockForPart(ctx.selectedModel);
   const p = vector(point);
+  const candidates = candidateVoxelsForTool(stock, p, tool);
   let removed = 0;
   let overcut = false;
   const overcutPoints = [];
-  stock.voxels.forEach(voxel => {
+  candidates.forEach(voxel => {
     if (!voxel.occupied) return;
     const insideTool = isBallTool(tool) ? isVoxelInsideBallTool(voxel, p, tool, stock.voxelSize) : isVoxelInsideFlatTool(voxel, p, tool, stock.voxelSize);
     if (!insideTool) return;
@@ -1226,6 +1229,29 @@ function removeVoxelsByToolAtPoint(point, tool, deferUpdate) {
   return removed;
 }
 
+function candidateVoxelsForTool(stock, point, tool) {
+  if (!stock.voxelIndex) stock.voxelIndex = new Map(stock.voxels.map(voxel => [voxelKey(voxel), voxel]));
+  const radius = tool.diameter / 2 + stock.voxelSize;
+  const minX = Math.floor((point.x - radius - stock.bounds.minX) / stock.voxelSize);
+  const maxX = Math.ceil((point.x + radius - stock.bounds.minX) / stock.voxelSize);
+  const minY = Math.floor((point.y - radius - stock.bounds.minY) / stock.voxelSize);
+  const maxY = Math.ceil((point.y + radius - stock.bounds.minY) / stock.voxelSize);
+  const minZValue = isBallTool(tool) ? point.z - radius : point.z - stock.voxelSize;
+  const maxZValue = isBallTool(tool) ? point.z + tool.diameter + stock.voxelSize : point.z + Math.max(Number(tool.fluteLength) || ctx.discHeight, stock.voxelSize) + stock.voxelSize;
+  const minZ = Math.floor((minZValue - stock.bounds.minZ) / stock.voxelSize);
+  const maxZ = Math.ceil((maxZValue - stock.bounds.minZ) / stock.voxelSize);
+  const voxels = [];
+  for (let iz = Math.max(0, minZ); iz <= Math.min(stock.dims.nz - 1, maxZ); iz += 1) {
+    for (let iy = Math.max(0, minY); iy <= Math.min(stock.dims.ny - 1, maxY); iy += 1) {
+      for (let ix = Math.max(0, minX); ix <= Math.min(stock.dims.nx - 1, maxX); ix += 1) {
+        const voxel = stock.voxelIndex.get(`${ix}:${iy}:${iz}`);
+        if (voxel) voxels.push(voxel);
+      }
+    }
+  }
+  return voxels;
+}
+
 function removeVoxelsAlongToolMove(fromPoint, toPoint, tool, precisionStep, deferUpdate) {
   const from = vector(fromPoint);
   const to = vector(toPoint);
@@ -1245,12 +1271,7 @@ function removeVoxelsAlongToolMove(fromPoint, toPoint, tool, precisionStep, defe
 function updateOvercutWarningVisual(stock) {
   removeCamObject(camVisuals.overcutWarning);
   camVisuals.overcutWarning = null;
-  if (!stock || !stock.possibleOvercut || !stock.overcutPoints || !stock.overcutPoints.length) return;
-  const group = new ctx.THREE.Group();
-  group.userData.camVisual = true;
-  createMarkerCloud(stock.overcutPoints, Math.max(stock.voxelSize * 0.42, 0.18), 0xef4444, 0.95, null, group);
-  ctx.scene.add(group);
-  camVisuals.overcutWarning = group;
+  if (stock && stock.possibleOvercut) updateCamPanel();
 }
 
 function isBallTool(tool) {
@@ -1672,9 +1693,9 @@ export function generateDemoToolpath() {
   cam.analysis.possibleOvercut = !!path.possibleOvercut;
   cam.analysis.comparisonReal = false;
   cam.analysis.status = path.possibleOvercut ? "La herramienta invade la zona protegida del STL objetivo." : path.status;
+  clearHeightmapVisuals();
   drawToolpath(path);
   showDesignTarget(true);
-  showRoughingTolerance(true);
   updateCamPanel();
   updateHeightmapMetrics();
   ctx.setStatus(path.status, path.possibleOvercut ? "warning" : "ok");
@@ -1694,7 +1715,6 @@ function drawToolpath(path) {
     group.userData.camVisual = true;
     ctx.scene.add(group);
     camVisuals.toolpaths.push(group);
-    if (path.possibleOvercut) markOvercutPoints(path);
     return group;
   }
   const geometry = new ctx.THREE.BufferGeometry().setFromPoints(path.points.map(vector));
@@ -1702,7 +1722,6 @@ function drawToolpath(path) {
   line.userData.camVisual = true;
   ctx.scene.add(line);
   camVisuals.toolpaths.push(line);
-  if (path.possibleOvercut) markOvercutPoints(path);
   return line;
 }
 
@@ -1918,23 +1937,29 @@ export function startCamSimulation() {
 export function stepCamAnimation() {
   if (!camSimulation.isRunning || camSimulation.isPaused || !camVisuals.tool || !camSimulation.pathPoints.length) return;
   const now = ctx.performance.now();
-  if (now - camSimulation.lastTime < 25) return;
+  if (now - camSimulation.lastTime < 16) return;
   camSimulation.lastTime = now;
-  const point = camSimulation.pathPoints[camSimulation.currentIndex];
   const path = selectedToolpath();
-  updateToolPosition(point);
-  if (path && point.moveType === "cut") {
-    if (camSimulation.currentIndex % camSimulation.removalVisualStep === 0) addRemovedMaterialMarker(point, path.tool);
-    if (ctx.selectedModel && ensureCam(ctx.selectedModel).voxelStock) {
-      removeVoxelsAlongToolMove(camSimulation.lastCutPoint || point, point, path.tool, CAM_REMOVAL_PRECISION_MM);
-      camSimulation.lastCutPoint = point;
-      if (camSimulation.currentIndex % camSimulation.voxelVisualStep === 0) updateVoxelStockVisual();
+  const endIndex = Math.min(camSimulation.pathPoints.length, camSimulation.currentIndex + CAM_SIMULATION_POINTS_PER_FRAME);
+  let point = camSimulation.pathPoints[camSimulation.currentIndex];
+  while (camSimulation.currentIndex < endIndex) {
+    point = camSimulation.pathPoints[camSimulation.currentIndex];
+    if (path && point.moveType === "cut") {
+      if (ctx.selectedModel && ensureCam(ctx.selectedModel).voxelStock) {
+        removeVoxelsAlongToolMove(camSimulation.lastCutPoint || point, point, path.tool, CAM_REMOVAL_PRECISION_MM, true);
+        camSimulation.lastCutPoint = point;
+      }
+    } else if (path && point.moveType === "rapid" && ctx.selectedModel) {
+      camSimulation.lastCutPoint = null;
+      ensureCam(ctx.selectedModel).simulation.status = "Movimiento rapid / enlace sin corte";
     }
-  } else if (path && point.moveType === "rapid" && ctx.selectedModel) {
-    camSimulation.lastCutPoint = null;
-    ensureCam(ctx.selectedModel).simulation.status = "Movimiento rapid / enlace sin corte";
+    camSimulation.currentIndex += 1;
   }
-  camSimulation.currentIndex += 1;
+  updateToolPosition(point);
+  if (ctx.selectedModel && ensureCam(ctx.selectedModel).voxelStock && camSimulation.currentIndex % camSimulation.voxelVisualStep < CAM_SIMULATION_POINTS_PER_FRAME) {
+    updateVoxelInfoForPart(ctx.selectedModel);
+    updateVoxelStockVisual();
+  }
   if (camSimulation.currentIndex >= camSimulation.pathPoints.length) {
     stopCamSimulation("Simulacion finalizada");
     if (ctx.selectedModel && ensureCam(ctx.selectedModel).voxelStock) updateVoxelStockVisual();
@@ -1946,17 +1971,9 @@ export function stepCamAnimation() {
 }
 
 function addRemovedMaterialMarker(point, tool) {
-  const mesh = new ctx.THREE.Mesh(
-    new ctx.THREE.SphereGeometry(Math.max(tool.diameter * 0.22, 0.12), 10, 6),
-    new ctx.THREE.MeshStandardMaterial({ color: 0xf97316, transparent: true, opacity: 0.38, depthWrite: false })
-  );
-  mesh.position.copy(vector(point));
-  mesh.userData.camVisual = true;
-  ctx.scene.add(mesh);
-  camVisuals.removed.push(mesh);
   const cam = ctx.selectedModel ? ensureCam(ctx.selectedModel) : null;
   if (cam) {
-    cam.simulation.removedMarkersCount = camVisuals.removed.length;
+    cam.simulation.removedMarkersCount = 0;
     cam.simulation.status = "Material removido durante simulacion";
   }
 }
@@ -2120,16 +2137,7 @@ function applyCamVisibility() {
 }
 
 function markOvercutPoints(path) {
-  path.points.forEach((point, index) => {
-    if (index % Math.max(1, Math.floor(path.points.length / 60)) !== 0) return;
-    const mesh = new ctx.THREE.Mesh(
-      new ctx.THREE.SphereGeometry(Math.max(path.tool.diameter * 0.4, 0.25), 12, 8),
-      new ctx.THREE.MeshStandardMaterial({ color: 0xef4444, transparent: true, opacity: 0.7 })
-    );
-    mesh.position.copy(vector(point));
-    ctx.scene.add(mesh);
-    camVisuals.overcut.push(mesh);
-  });
+  if (path) path.hasVisualOvercutMarkers = false;
 }
 
 function calculatePathLength(points) {
