@@ -44,16 +44,18 @@ function setupCamControls() {
   }
 
   if (strategy && !ctx.document.getElementById("camTolerance")) {
-    strategy.insertAdjacentHTML("afterend", '<label>Tolerancia mm</label><input id="camTolerance" type="number" value="0.50" step="0.01" min="0" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>StepOver %</label><input id="camStepOverPercent" type="number" value="70" step="1" min="1" max="100" onchange="updateDerivedCamInputs()" oninput="updateDerivedCamInputs()"/><label>StepOver mm</label><input id="camStepOver" type="number" value="1.40" step="0.05" min="0.05" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>StepDown mm</label><input id="camStepDown" type="number" value="1.50" step="0.05" min="0.05" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>RPM</label><input id="camRpm" type="number" value="28000" step="500" min="1000" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>Feed rate mm/min</label><input id="camFeedRate" type="number" value="800" step="10" min="1" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>Stock to leave mm</label><input id="camStockToLeave" type="number" value="0.50" step="0.01" min="0" onchange="updateCamPanel()" oninput="updateCamPanel()"/><div class="info-card" id="camDemoNotice">CAM demo visual: todavia no calcula mecanizado real. Las trayectorias actuales son aproximadas. El motor real se implementara con heightmap/voxel.</div>');
+    strategy.insertAdjacentHTML("afterend", '<label>Tolerancia mm</label><input id="camTolerance" type="number" value="0.50" step="0.01" min="0" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>StepOver %</label><input id="camStepOverPercent" type="number" value="70" step="1" min="1" max="100" onchange="updateDerivedCamInputs()" oninput="updateDerivedCamInputs()"/><label>StepOver mm</label><input id="camStepOver" type="number" value="1.40" step="0.05" min="0.05" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>StepDown mm</label><input id="camStepDown" type="number" value="1.50" step="0.05" min="0.05" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>RPM</label><input id="camRpm" type="number" value="28000" step="500" min="1000" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>Feed rate mm/min</label><input id="camFeedRate" type="number" value="800" step="10" min="1" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>Stock to leave mm</label><input id="camStockToLeave" type="number" value="0.50" step="0.01" min="0" onchange="updateCamPanel()" oninput="updateCamPanel()"/>');
   }
 
   const camPanel = ctx.document.querySelector(".panel.right .cam-only");
   if (camPanel && !ctx.document.getElementById("camHeightmapResolution")) {
-    camPanel.insertAdjacentHTML("afterbegin", '<div class="cam-workflow"><h3>CAM Dental</h3><div class="cam-primary-actions"><button class="success" onclick="prepareDentalCamStock()">Preparar stock</button><button class="success" onclick="runDentalRoughingOperation()">Desbastar stock</button><button class="secondary" onclick="simulateCurrentDentalOperation()">Simular</button><button class="secondary" onclick="showMachinedVoxelStock()">Ver remanente</button></div><div class="cam-view-tabs"><button class="secondary" onclick="setCamViewPreset(\'design\')">Objetivo</button><button class="secondary" onclick="setCamViewPreset(\'stock\')">Stock</button><button class="secondary" onclick="setCamViewPreset(\'toolpath\')">Trayectoria</button><button class="secondary" onclick="setCamViewPreset(\'machined\')">Remanente</button></div><div class="info-card"><h3>Operaciones</h3><div id="camOperationList" class="cam-operation-list"></div><button class="secondary" onclick="addDentalOperation()">Agregar operacion</button></div><label>Resolucion stock mm</label><input id="camVoxelSize" type="number" value="1.00" step="0.10" min="0.5" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="secondary" onclick="toggleCamAdvancedPanel()">Ajustes avanzados</button></div><div id="camAdvancedPanel" class="cam-advanced-panel"><label>Vista CAM</label><button class="secondary" onclick="setCamViewPreset(\'simulation\')">Simulacion</button><label><input id="camShowRapidMoves" type="checkbox" onchange="toggleRapidMoves(this.checked)"> Mostrar rapid moves</label><button class="secondary" onclick="hideCamHelpers()">Ocultar ayudas CAM</button><label>Resolucion heightmap mm</label><input id="camHeightmapResolution" type="number" value="1.00" step="0.10" min="0.25" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="secondary" onclick="generateHeightmapForSelectedPart()">Generar heightmap</button><button class="secondary" onclick="showHeightmap()">Mostrar heightmap</button><button class="secondary" onclick="showRoughingTolerance()">Mostrar tolerancia</button><button class="secondary" onclick="resetVoxelStock()">Reset stock voxel</button></div>');
+    camPanel.insertAdjacentHTML("afterbegin", '<div class="cam-workflow"><h3>CAM Dental</h3><div class="cam-primary-actions"><button class="success" onclick="prepareDentalCamStock()">Preparar stock</button><button class="success" onclick="runDentalRoughingOperation()">Desbastar</button><button class="secondary" onclick="simulateCurrentDentalOperation()">Simular</button><button class="secondary" onclick="showMachinedVoxelStock()">Pieza resultante</button></div><div class="cam-view-tabs"><button class="secondary" data-cam-view="design" onclick="setCamViewPreset(\'design\')">Diseño</button><button class="secondary" data-cam-view="stock" onclick="setCamViewPreset(\'stock\')">Stock inicial</button><button class="secondary" data-cam-view="simulation" onclick="setCamViewPreset(\'simulation\')">Mecanizado</button><button class="secondary" data-cam-view="machined" onclick="setCamViewPreset(\'machined\')">Pieza resultante</button></div><div class="info-card"><h3>Operaciones</h3><div id="camOperationList" class="cam-operation-list"></div><button class="secondary" onclick="addDentalOperation()">Agregar operacion</button></div><label>Resolucion stock mm</label><input id="camVoxelSize" type="number" value="1.00" step="0.10" min="0.5" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="secondary" onclick="toggleCamAdvancedPanel()">Ajustes avanzados</button></div><div id="camAdvancedPanel" class="cam-advanced-panel"><label>Vista CAM avanzada</label><button class="secondary" onclick="setCamViewPreset(\'toolpath\')">Solo trayectoria</button><label><input id="camShowRapidMoves" type="checkbox" onchange="toggleRapidMoves(this.checked)"> Mostrar movimientos rapid</label><button class="secondary" onclick="hideCamHelpers()">Ocultar ayudas CAM</button><label>Resolucion heightmap mm</label><input id="camHeightmapResolution" type="number" value="1.00" step="0.10" min="0.25" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="secondary" onclick="generateHeightmapForSelectedPart()">Generar heightmap</button><button class="secondary" onclick="showHeightmap()">Mostrar heightmap</button><button class="secondary" onclick="showRoughingTolerance()">Mostrar tolerancia</button><button class="secondary" onclick="resetVoxelStock()">Reset stock voxel</button></div>');
   }
 
   relabelCamButtons();
   compactLegacyCamButtons();
+  hideTechnicalCamVisibility();
+  simplifyCamMetricsPanel();
   applyStrategyDefaults(true);
   renderCamOperationList();
 }
@@ -101,6 +103,35 @@ function compactLegacyCamButtons() {
   if (heading) heading.style.display = "none";
   const advanced = ctx.document.getElementById("camAdvancedPanel");
   if (advanced) advanced.style.display = "none";
+}
+
+function hideTechnicalCamVisibility() {
+  const visibility = ctx.document.querySelector(".cam-visibility");
+  const card = visibility ? visibility.closest(".info-card") : null;
+  if (card) card.style.display = "none";
+}
+
+function simplifyCamMetricsPanel() {
+  renameMetric("camRemovedCount", "Pieza resultante");
+  renameMetric("camRemaining", "Avance");
+  hideMetric("camCollisionRisk");
+  hideMetric("camMaxError");
+  hideMetric("camAvgError");
+  hideMetric("camComparisonStatus");
+  hideMetric("camConceptNote");
+}
+
+function renameMetric(id, label) {
+  const value = ctx.document.getElementById(id);
+  const row = value ? value.closest(".metric") : null;
+  const caption = row ? row.querySelector("span:first-child") : null;
+  if (caption) caption.textContent = label;
+}
+
+function hideMetric(id) {
+  const value = ctx.document.getElementById(id);
+  const row = value ? value.closest(".metric") : null;
+  if (row) row.style.display = "none";
 }
 
 function exposeCamWindowFunctions() {
@@ -1331,19 +1362,28 @@ function showMachinedVoxelStock(silent) {
 
 function setCamViewPreset(preset, silent) {
   camViewState.currentPreset = preset;
+  updateCamViewButtons(preset);
   if (preset === "design") {
     showDesignTargetOnly();
-    if (!silent) ctx.setStatus("Vista CAM: diseno objetivo original visible.", "ok");
+    if (!silent) ctx.setStatus("Vista: diseño original.", "ok");
     return;
   }
   const showStock = preset === "stock" || preset === "simulation" || preset === "machined";
   const showToolpath = preset === "toolpath" || preset === "simulation";
   const showTool = preset === "simulation";
   camViewState.showRemovedVoxels = false;
+  ctx.camVisibility.design = true;
+  ctx.camVisibility.stock = showStock;
+  ctx.camVisibility.supports = preset !== "stock";
+  ctx.camVisibility.toolpath = showToolpath;
+  ctx.camVisibility.tool = showTool;
+  ctx.camVisibility.removed = false;
+  ctx.camVisibility.machined = preset === "machined";
+  ctx.camVisibility.comparison = false;
 
   if (ctx.selectedModel) {
     showDesignTarget(true);
-    prepareDesignMeshForCam(ctx.selectedModel, preset === "stock" || preset === "machined" ? 0.55 : 0.72, preset === "machined");
+    prepareDesignMeshForCam(ctx.selectedModel, preset === "stock" || preset === "machined" ? 0.45 : 0.72, preset === "machined");
   }
   if (camVisuals.voxelStock) camVisuals.voxelStock.visible = showStock;
   if (showStock && ctx.selectedModel && ensureCam(ctx.selectedModel).voxelStock) updateVoxelStockVisual(camViewState.showRemovedVoxels);
@@ -1355,7 +1395,25 @@ function setCamViewPreset(preset, silent) {
   if (camVisuals.tool) camVisuals.tool.visible = showTool;
   if (camVisuals.overcutWarning) camVisuals.overcutWarning.visible = preset !== "stock";
   applyToolpathMoveVisibility();
-  if (!silent) ctx.setStatus(`Vista CAM: ${preset}`, "ok");
+  if (!silent) ctx.setStatus(`Vista: ${camViewLabel(preset)}.`, "ok");
+}
+
+function updateCamViewButtons(preset) {
+  ctx.document.querySelectorAll("[data-cam-view]").forEach(button => {
+    const active = button.dataset.camView === preset;
+    button.classList.toggle("active", active);
+    button.classList.toggle("secondary", !active);
+  });
+}
+
+function camViewLabel(preset) {
+  return {
+    design: "diseño",
+    stock: "stock inicial",
+    simulation: "mecanizado",
+    toolpath: "trayectoria",
+    machined: "pieza resultante"
+  }[preset] || preset;
 }
 
 function showDesignTargetOnly() {
