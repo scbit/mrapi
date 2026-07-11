@@ -1104,14 +1104,34 @@ function protectedGeometryTargets() {
   return ctx.models
     .filter(model => model && model.mesh)
     .map(model => {
+      model.mesh.updateMatrixWorld(true);
+      makeMeshRaycastDoubleSided(model.mesh);
       const heightmap = generateHeightmapForPart(model);
       computeProtectedHeightmap(heightmap, params.stockToLeave);
+      const solidBounds = new ctx.THREE.Box3().setFromObject(model.mesh);
+      solidBounds.expandByScalar(Math.max(params.stockToLeave, 0) + heightmap.resolution * 0.5);
       return {
         model,
+        mesh: model.mesh,
         heightmap,
+        solidBounds,
+        raycaster: new ctx.THREE.Raycaster(),
         supports: Array.isArray(model.supports) ? model.supports : []
       };
     });
+}
+
+function makeMeshRaycastDoubleSided(root) {
+  if (!root || !root.traverse) return;
+  root.traverse(obj => {
+    if (!obj || !obj.material) return;
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+    materials.forEach(material => {
+      if (!material) return;
+      material.side = ctx.THREE.DoubleSide;
+      material.needsUpdate = true;
+    });
+  });
 }
 
 function classifyProtectedVoxels(part) {
@@ -1125,7 +1145,8 @@ function classifyProtectedVoxels(part) {
     if (voxel.protected) protectedVoxels += 1;
   });
   stock.protectedVoxels = protectedVoxels;
-  stock.protectedScope = "all_nested_parts_and_supports";
+  stock.protectedScope = "solid_stl_volume_and_supports";
+  stock.protectedMethod = "raycast_closed_stl_volume";
   stock.protectedPartCount = targets.length;
   stock.protectedSupportCount = targets.reduce((count, target) => count + target.supports.length, 0);
   updateVoxelInfoForPart(part);
@@ -1134,10 +1155,41 @@ function classifyProtectedVoxels(part) {
 
 function isVoxelProtectedByTargets(voxel, targets, voxelSize) {
   return targets.some(target => {
-    const cell = getNearestHeightmapCell(target.heightmap, voxel.x, voxel.y);
-    if (cell && cell.hasSurface && voxel.z <= cell.protectedZ) return true;
+    const point = new ctx.THREE.Vector3(voxel.x, voxel.y, voxel.z);
+    if (isPointInsideSolidTarget(point, target, voxelSize)) return true;
     return target.supports.some(support => isVoxelInsideSupportEnvelope(voxel, support, voxelSize));
   });
+}
+
+function isPointInsideSolidTarget(point, target, voxelSize) {
+  if (!target || !target.mesh || !target.solidBounds || !target.solidBounds.containsPoint(point)) return false;
+  const directions = [
+    new ctx.THREE.Vector3(1, 0.137, 0.071).normalize(),
+    new ctx.THREE.Vector3(0.113, 1, 0.053).normalize(),
+    new ctx.THREE.Vector3(0.097, 0.061, 1).normalize()
+  ];
+  let insideVotes = 0;
+  directions.forEach(direction => {
+    const origin = point.clone().add(direction.clone().multiplyScalar(voxelSize * 0.013));
+    const raycaster = target.raycaster || new ctx.THREE.Raycaster();
+    raycaster.set(origin, direction);
+    raycaster.near = 0;
+    raycaster.far = Math.max(target.solidBounds.getSize(new ctx.THREE.Vector3()).length() + voxelSize * 2, 1);
+    const hits = uniqueRayDistances(raycaster.intersectObject(target.mesh, true));
+    if (hits.length % 2 === 1) insideVotes += 1;
+  });
+  return insideVotes >= 2;
+}
+
+function uniqueRayDistances(intersections) {
+  const unique = [];
+  intersections
+    .filter(hit => hit && hit.distance > 1e-5)
+    .sort((a, b) => a.distance - b.distance)
+    .forEach(hit => {
+      if (!unique.length || Math.abs(hit.distance - unique[unique.length - 1]) > 1e-4) unique.push(hit.distance);
+    });
+  return unique;
 }
 
 function isVoxelInsideSupportEnvelope(voxel, support, voxelSize) {
@@ -1691,7 +1743,8 @@ function serializeVoxelInfoForPart(part) {
     bounds: stock.bounds,
     generatedAt: stock.generatedAt,
     stockType: "dental_disc",
-    protectedScope: stock.protectedScope || "all_nested_parts_and_supports",
+    protectedScope: stock.protectedScope || "solid_stl_volume_and_supports",
+    protectedMethod: stock.protectedMethod || "raycast_closed_stl_volume",
     protectedPartCount: stock.protectedPartCount || 0,
     protectedSupportCount: stock.protectedSupportCount || 0,
     discDiameter: ctx.discDiameter,
