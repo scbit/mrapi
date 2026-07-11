@@ -7,7 +7,8 @@ let camRuntimeStocks = null;
 let camViewState = {
   showRapid: false,
   showRemovedVoxels: false,
-  currentPreset: "simulation"
+  currentPreset: "simulation",
+  stockRenderMode: "solid"
 };
 let camOperationCounter = 1;
 const CAM_REMOVAL_PRECISION_MM = 0.1;
@@ -49,7 +50,7 @@ function setupCamControls() {
 
   const camPanel = ctx.document.querySelector(".panel.right .cam-only");
   if (camPanel && !ctx.document.getElementById("camHeightmapResolution")) {
-    camPanel.insertAdjacentHTML("afterbegin", '<div class="cam-workflow"><h3>CAM Dental</h3><div class="cam-primary-actions"><button class="success" onclick="prepareDentalCamStock()">Preparar stock</button><button class="success" onclick="runDentalRoughingOperation()">Desbastar</button><button class="secondary" onclick="simulateCurrentDentalOperation()">Simular</button><button class="secondary" onclick="showMachinedVoxelStock()">Pieza resultante</button></div><div class="cam-view-tabs"><button class="secondary" data-cam-view="design" onclick="setCamViewPreset(\'design\')">Diseño</button><button class="secondary" data-cam-view="stock" onclick="setCamViewPreset(\'stock\')">Stock inicial</button><button class="secondary" data-cam-view="simulation" onclick="setCamViewPreset(\'simulation\')">Mecanizado</button><button class="secondary" data-cam-view="machined" onclick="setCamViewPreset(\'machined\')">Pieza resultante</button></div><div class="info-card"><h3>Operaciones</h3><div id="camOperationList" class="cam-operation-list"></div><button class="secondary" onclick="addDentalOperation()">Agregar operacion</button></div><label>Resolucion stock mm</label><input id="camVoxelSize" type="number" value="1.00" step="0.10" min="0.5" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="secondary" onclick="toggleCamAdvancedPanel()">Ajustes avanzados</button></div><div id="camAdvancedPanel" class="cam-advanced-panel"><label>Vista CAM avanzada</label><button class="secondary" onclick="setCamViewPreset(\'toolpath\')">Solo trayectoria</button><label><input id="camShowRapidMoves" type="checkbox" onchange="toggleRapidMoves(this.checked)"> Mostrar movimientos rapid</label><button class="secondary" onclick="hideCamHelpers()">Ocultar ayudas CAM</button><label>Resolucion heightmap mm</label><input id="camHeightmapResolution" type="number" value="1.00" step="0.10" min="0.25" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="secondary" onclick="generateHeightmapForSelectedPart()">Generar heightmap</button><button class="secondary" onclick="showHeightmap()">Mostrar heightmap</button><button class="secondary" onclick="showRoughingTolerance()">Mostrar tolerancia</button><button class="secondary" onclick="resetVoxelStock()">Reset stock voxel</button></div>');
+    camPanel.insertAdjacentHTML("afterbegin", '<div class="cam-workflow"><h3>CAM Dental</h3><div class="cam-primary-actions"><button class="success" onclick="prepareDentalCamStock()">Preparar stock</button><button class="success" onclick="runDentalRoughingOperation()">Desbastar</button><button class="secondary" onclick="simulateCurrentDentalOperation()">Simular</button><button class="secondary" onclick="showMachinedVoxelStock()">Pieza resultante</button></div><div class="cam-view-tabs"><button class="secondary" data-cam-view="design" onclick="setCamViewPreset(\'design\')">Diseño</button><button class="secondary" data-cam-view="stock" onclick="setCamViewPreset(\'stock\')">Stock inicial</button><button class="secondary" data-cam-view="simulation" onclick="setCamViewPreset(\'simulation\')">Mecanizado</button><button class="secondary" data-cam-view="machined" onclick="setCamViewPreset(\'machined\')">Pieza resultante</button></div><div class="cam-render-tabs"><button class="active" data-cam-render="solid" onclick="setCamStockRenderMode(\'solid\')">Sólido</button><button class="secondary" data-cam-render="lines" onclick="setCamStockRenderMode(\'lines\')">Líneas</button></div><div class="info-card"><h3>Operaciones</h3><div id="camOperationList" class="cam-operation-list"></div><button class="secondary" onclick="addDentalOperation()">Agregar operacion</button></div><label>Resolucion stock mm</label><input id="camVoxelSize" type="number" value="1.00" step="0.10" min="0.5" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="secondary" onclick="toggleCamAdvancedPanel()">Ajustes avanzados</button></div><div id="camAdvancedPanel" class="cam-advanced-panel"><label>Vista CAM avanzada</label><button class="secondary" onclick="setCamViewPreset(\'toolpath\')">Solo trayectoria</button><label><input id="camShowRapidMoves" type="checkbox" onchange="toggleRapidMoves(this.checked)"> Mostrar movimientos rapid</label><button class="secondary" onclick="hideCamHelpers()">Ocultar ayudas CAM</button><label>Resolucion heightmap mm</label><input id="camHeightmapResolution" type="number" value="1.00" step="0.10" min="0.25" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="secondary" onclick="generateHeightmapForSelectedPart()">Generar heightmap</button><button class="secondary" onclick="showHeightmap()">Mostrar heightmap</button><button class="secondary" onclick="showRoughingTolerance()">Mostrar tolerancia</button><button class="secondary" onclick="resetVoxelStock()">Reset stock voxel</button></div>');
   }
 
   relabelCamButtons();
@@ -168,6 +169,7 @@ function exposeCamWindowFunctions() {
     deleteDentalOperation,
     toggleCamAdvancedPanel,
     setCamViewPreset,
+    setCamStockRenderMode,
     toggleRapidMoves,
     hideCamHelpers,
     generateDemoToolpath,
@@ -1124,10 +1126,11 @@ function updateVoxelStockVisual(showRemoved) {
   const group = new ctx.THREE.Group();
   group.userData.camVisual = true;
   const hasMachining = stock.voxels.some(v => v.removed);
+  const lineMode = camViewState.stockRenderMode === "lines";
   if (hasMachining) {
-    addVoxelSurfaceMesh(group, stock.voxels.filter(v => v.occupied), stock, 0xd1d5db, 0.32);
+    addVoxelSurfaceMesh(group, stock.voxels.filter(v => v.occupied), stock, 0xd1d5db, lineMode ? 0.42 : 0.92, lineMode);
   } else {
-    addSmoothDiscStockMesh(group, stock, 0xd1d5db, 0.34);
+    addSmoothDiscStockMesh(group, stock, 0xd1d5db, lineMode ? 0.28 : 0.86, lineMode);
   }
   if (includeRemoved) addVoxelInstances(group, stock.voxels.filter(v => v.removed), stock.voxelSize, 0xf97316, 0.40, 1800);
   ctx.scene.add(group);
@@ -1136,7 +1139,7 @@ function updateVoxelStockVisual(showRemoved) {
   applyCamVisibility();
 }
 
-function addSmoothDiscStockMesh(parent, stock, color, opacity) {
+function addSmoothDiscStockMesh(parent, stock, color, opacity, lineMode) {
   const radius = Math.max(ctx.discDiameter / 2, 0.1);
   const height = Math.max(ctx.discHeight, 0.1);
   const geometry = new ctx.THREE.CylinderGeometry(radius, radius, height, 128, 1, false);
@@ -1148,21 +1151,24 @@ function addSmoothDiscStockMesh(parent, stock, color, opacity) {
     roughness: 0.68,
     metalness: 0.03,
     side: ctx.THREE.DoubleSide,
-    depthWrite: false
+    depthWrite: !lineMode,
+    wireframe: !!lineMode
   });
   const mesh = new ctx.THREE.Mesh(geometry, material);
   mesh.userData.camVisual = true;
   parent.add(mesh);
 
-  const edges = new ctx.THREE.LineSegments(
-    new ctx.THREE.EdgesGeometry(geometry),
-    new ctx.THREE.LineBasicMaterial({ color: 0xe5e7eb, transparent: true, opacity: 0.45 })
-  );
-  edges.userData.camVisual = true;
-  parent.add(edges);
+  if (lineMode) {
+    const edges = new ctx.THREE.LineSegments(
+      new ctx.THREE.EdgesGeometry(geometry),
+      new ctx.THREE.LineBasicMaterial({ color: 0xe5e7eb, transparent: true, opacity: 0.55 })
+    );
+    edges.userData.camVisual = true;
+    parent.add(edges);
+  }
 }
 
-function addVoxelSurfaceMesh(parent, voxels, stock, color, opacity) {
+function addVoxelSurfaceMesh(parent, voxels, stock, color, opacity, lineMode) {
   if (!voxels.length) return;
   const voxelSet = new Set(voxels.map(voxelKey));
   const positions = [];
@@ -1192,11 +1198,21 @@ function addVoxelSurfaceMesh(parent, voxels, stock, color, opacity) {
   if (!positions.length) return;
   const geometry = new ctx.THREE.BufferGeometry();
   geometry.setAttribute("position", new ctx.THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("normal", new ctx.THREE.Float32BufferAttribute(normals, 3));
   geometry.setIndex(indices);
+  geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
-  const material = new ctx.THREE.MeshStandardMaterial({ color, transparent: true, opacity, roughness: 0.72, metalness: 0.04, side: ctx.THREE.DoubleSide, depthWrite: false });
+  const material = new ctx.THREE.MeshStandardMaterial({
+    color,
+    transparent: opacity < 1,
+    opacity,
+    roughness: 0.78,
+    metalness: 0.02,
+    side: ctx.THREE.DoubleSide,
+    depthWrite: !lineMode,
+    wireframe: !!lineMode
+  });
   const mesh = new ctx.THREE.Mesh(geometry, material);
+  mesh.renderOrder = lineMode ? 20 : 5;
   mesh.userData.camVisual = true;
   parent.add(mesh);
 }
@@ -1383,8 +1399,10 @@ function setCamViewPreset(preset, silent) {
 
   if (ctx.selectedModel) {
     showDesignTarget(true);
-    prepareDesignMeshForCam(ctx.selectedModel, preset === "stock" || preset === "machined" ? 0.45 : 0.72, preset === "machined");
+    const designOpacity = preset === "machined" ? 0.24 : preset === "stock" ? 0.42 : 0.72;
+    prepareDesignMeshForCam(ctx.selectedModel, designOpacity, camViewState.stockRenderMode === "lines" && preset === "machined");
   }
+  hideSceneBoxHelpers();
   if (camVisuals.voxelStock) camVisuals.voxelStock.visible = showStock;
   if (showStock && ctx.selectedModel && ensureCam(ctx.selectedModel).voxelStock) updateVoxelStockVisual(camViewState.showRemovedVoxels);
   camVisuals.toolpaths.forEach(obj => obj.visible = showToolpath);
@@ -1398,12 +1416,29 @@ function setCamViewPreset(preset, silent) {
   if (!silent) ctx.setStatus(`Vista: ${camViewLabel(preset)}.`, "ok");
 }
 
+function setCamStockRenderMode(mode) {
+  camViewState.stockRenderMode = mode === "lines" ? "lines" : "solid";
+  updateCamRenderButtons();
+  if (ctx.selectedModel && ensureCam(ctx.selectedModel).voxelStock) updateVoxelStockVisual(false);
+  if (camViewState.currentPreset) setCamViewPreset(camViewState.currentPreset, true);
+  ctx.setStatus(`Vista de stock: ${camViewState.stockRenderMode === "lines" ? "líneas" : "sólido"}.`, "ok");
+}
+
+function updateCamRenderButtons() {
+  ctx.document.querySelectorAll("[data-cam-render]").forEach(button => {
+    const active = button.dataset.camRender === camViewState.stockRenderMode;
+    button.classList.toggle("active", active);
+    button.classList.toggle("secondary", !active);
+  });
+}
+
 function updateCamViewButtons(preset) {
   ctx.document.querySelectorAll("[data-cam-view]").forEach(button => {
     const active = button.dataset.camView === preset;
     button.classList.toggle("active", active);
     button.classList.toggle("secondary", !active);
   });
+  updateCamRenderButtons();
 }
 
 function camViewLabel(preset) {
