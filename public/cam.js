@@ -10,6 +10,8 @@ export function initCam(context) {
   camVisuals = context.camVisuals;
   camSimulation = context.camSimulation;
   camRuntimeStocks = context.camRuntimeStocks;
+  camVisuals.heightmap = camVisuals.heightmap || [];
+  camVisuals.tolerance = camVisuals.tolerance || [];
   setupCamControls();
   exposeCamWindowFunctions();
 }
@@ -32,6 +34,11 @@ function setupCamControls() {
 
   if (strategy && !ctx.document.getElementById("camTolerance")) {
     strategy.insertAdjacentHTML("afterend", '<label>Tolerancia mm</label><input id="camTolerance" type="number" value="0.50" step="0.01" min="0" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>StepOver %</label><input id="camStepOverPercent" type="number" value="70" step="1" min="1" max="100" onchange="updateDerivedCamInputs()" oninput="updateDerivedCamInputs()"/><label>StepOver mm</label><input id="camStepOver" type="number" value="1.40" step="0.05" min="0.05" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>StepDown mm</label><input id="camStepDown" type="number" value="1.50" step="0.05" min="0.05" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>RPM</label><input id="camRpm" type="number" value="28000" step="500" min="1000" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>Feed rate mm/min</label><input id="camFeedRate" type="number" value="800" step="10" min="1" onchange="updateCamPanel()" oninput="updateCamPanel()"/><label>Stock to leave mm</label><input id="camStockToLeave" type="number" value="0.50" step="0.01" min="0" onchange="updateCamPanel()" oninput="updateCamPanel()"/><div class="info-card" id="camDemoNotice">CAM demo visual: todavia no calcula mecanizado real. Las trayectorias actuales son aproximadas. El motor real se implementara con heightmap/voxel.</div>');
+  }
+
+  const camPanel = ctx.document.querySelector(".panel.right .cam-only");
+  if (camPanel && !ctx.document.getElementById("camHeightmapResolution")) {
+    camPanel.insertAdjacentHTML("afterbegin", '<label>Resolucion heightmap mm</label><input id="camHeightmapResolution" type="number" value="1.00" step="0.10" min="0.25" onchange="updateCamPanel()" oninput="updateCamPanel()"/><button class="success" onclick="generateHeightmapForSelectedPart()">Generar heightmap</button><button class="secondary" onclick="showHeightmap()">Mostrar heightmap</button><button class="secondary" onclick="showRoughingTolerance()">Mostrar tolerancia desbaste</button>');
   }
 
   relabelCamButtons();
@@ -60,7 +67,7 @@ function relabelCamButtons() {
   const buttons = Array.from(ctx.document.querySelectorAll(".cam-only button"));
   buttons.forEach(button => {
     const action = button.getAttribute("onclick") || "";
-    if (action.includes("generateDemoToolpath")) button.textContent = "Generar desbaste demo";
+    if (action.includes("generateDemoToolpath")) button.textContent = "Generar desbaste heightmap";
     if (action.includes("startCamSimulation")) button.textContent = "Simular desbaste";
     if (action.includes("showRemovedMaterialDemo")) button.textContent = "Ver material a remover";
     if (action.includes("showMachinedStockApproximation")) button.textContent = "Ver stock remanente";
@@ -77,6 +84,14 @@ function exposeCamWindowFunctions() {
   Object.assign(ctx.window, {
     setAppMode,
     updateCamPanel,
+    generateHeightmapForSelectedPart,
+    generateHeightmapForPart,
+    showHeightmap,
+    showRoughingTolerance,
+    showMaterialToRemoveFromHeightmap,
+    showRemainingStockFromHeightmap,
+    clearHeightmapVisuals,
+    simulateHeightmapToolpath,
     generateDemoToolpath,
     startCamSimulation,
     pauseCamSimulation,
@@ -130,7 +145,7 @@ function getCamParameters() {
     rpm: numberInput("camRpm", tool.defaultRpm),
     feedRate: numberInput("camFeedRate", strategy.id === "finishing" ? findMaterial(textInput("material", "zirconia")).finishingFeed : findMaterial(textInput("material", "zirconia")).roughingFeed),
     stockToLeave: numberInput("camStockToLeave", strategy.stockToLeave || strategy.tolerance),
-    protectedMethod: "bbox_or_ellipse_demo"
+    protectedMethod: "heightmap_2_5d_demo"
   };
 }
 
@@ -185,6 +200,12 @@ function ensureCam(model) {
     possibleOvercut: false,
     comparisonReal: false,
     remainingMaterialDemo: true,
+    heightmapResolution: 0,
+    surfacePoints: 0,
+    machinedPoints: 0,
+    protectedPoints: 0,
+    skippedProtectedPoints: 0,
+    coverageDemo: 0,
     status: "Demo CAM aproximado"
   }, model.cam.analysis);
   return model.cam;
@@ -245,6 +266,331 @@ export function updateCamPanel() {
   setCamText("camAvgError", "Pendiente");
   setCamText("camComparisonStatus", analysis ? analysis.status : "Comparacion geometrica real pendiente");
   setCamText("camConceptNote", params.strategy === "Acabado" ? "Acabado demo: pasada fina pendiente de superficie real." : "Desbaste demo: deja tolerancia, requiere acabado.");
+}
+
+function heightmapResolution() {
+  return Math.max(0.25, numberInput("camHeightmapResolution", 1));
+}
+
+function generateHeightmapForSelectedPart() {
+  if (!ctx.requireModel()) return null;
+  const heightmap = generateHeightmapForPart(ctx.selectedModel);
+  showHeightmap(true);
+  updateCamPanel();
+  updateHeightmapMetrics();
+  ctx.setStatus(`Heightmap generado: ${heightmap.rows}x${heightmap.cols}, ${heightmap.surfacePoints} puntos de superficie.`, "ok");
+  return heightmap;
+}
+
+function generateHeightmapForPart(part) {
+  const params = getCamParameters();
+  const cam = ensureCam(part);
+  part.mesh.updateMatrixWorld(true);
+  const box = new ctx.THREE.Box3().setFromObject(part.mesh);
+  const resolution = heightmapResolution();
+  const margin = Math.max(params.tool.diameter * 1.5, params.stepOver * 1.5, 2);
+  const bounds = {
+    minX: Number((box.min.x - margin).toFixed(3)),
+    maxX: Number((box.max.x + margin).toFixed(3)),
+    minY: Number((box.min.y - margin).toFixed(3)),
+    maxY: Number((box.max.y + margin).toFixed(3)),
+    minZ: Number(box.min.z.toFixed(3)),
+    maxZ: Number(box.max.z.toFixed(3))
+  };
+  const cols = Math.max(1, Math.floor((bounds.maxX - bounds.minX) / resolution) + 1);
+  const rows = Math.max(1, Math.floor((bounds.maxY - bounds.minY) / resolution) + 1);
+  const cells = [];
+  let surfacePoints = 0;
+
+  for (let row = 0; row < rows; row += 1) {
+    const y = bounds.minY + row * resolution;
+    for (let col = 0; col < cols; col += 1) {
+      const x = bounds.minX + col * resolution;
+      const zSurface = raycastSurfaceZAtXY(part, x, y, bounds.maxZ + margin + params.tool.diameter);
+      const hasSurface = Number.isFinite(zSurface);
+      if (hasSurface) surfacePoints += 1;
+      cells.push({
+        row,
+        col,
+        x: Number(x.toFixed(3)),
+        y: Number(y.toFixed(3)),
+        zSurface: hasSurface ? Number(zSurface.toFixed(3)) : null,
+        hasSurface,
+        protectedZ: hasSurface ? Number((zSurface + params.stockToLeave).toFixed(3)) : null,
+        roughingZ: null
+      });
+    }
+  }
+
+  const heightmap = {
+    resolution,
+    bounds,
+    rows,
+    cols,
+    cells,
+    surfacePoints,
+    generatedAt: new Date().toISOString()
+  };
+  computeProtectedHeightmap(heightmap, params.stockToLeave);
+  cam.heightmap = heightmap;
+  cam.heightmapInfo = heightmapInfo(heightmap);
+  cam.analysis.heightmapResolution = resolution;
+  cam.analysis.surfacePoints = surfacePoints;
+  cam.analysis.protectedPoints = surfacePoints;
+  cam.analysis.status = "Heightmap 2.5D generado desde raycast vertical del STL.";
+  return heightmap;
+}
+
+function raycastSurfaceZAtXY(part, x, y, originZ) {
+  const raycaster = new ctx.THREE.Raycaster(
+    new ctx.THREE.Vector3(x, y, originZ),
+    new ctx.THREE.Vector3(0, 0, -1),
+    0,
+    Math.max(1, originZ + ctx.discHeight + 200)
+  );
+  const hits = raycaster.intersectObject(part.mesh, true);
+  if (!hits.length) return null;
+  hits.sort((a, b) => b.point.z - a.point.z);
+  return hits[0].point.z;
+}
+
+function getNearestHeightmapCell(heightmap, x, y) {
+  if (!heightmap || !heightmap.cells || !heightmap.cells.length) return null;
+  const col = Math.max(0, Math.min(heightmap.cols - 1, Math.round((x - heightmap.bounds.minX) / heightmap.resolution)));
+  const row = Math.max(0, Math.min(heightmap.rows - 1, Math.round((y - heightmap.bounds.minY) / heightmap.resolution)));
+  return heightmap.cells[row * heightmap.cols + col] || null;
+}
+
+function computeProtectedHeightmap(heightmap, stockToLeave) {
+  let protectedPoints = 0;
+  heightmap.cells.forEach(cell => {
+    if (!cell.hasSurface) return;
+    protectedPoints += 1;
+    cell.protectedZ = Number((cell.zSurface + stockToLeave).toFixed(3));
+  });
+  heightmap.protectedPoints = protectedPoints;
+  heightmap.stockToLeave = stockToLeave;
+  return heightmap;
+}
+
+function generateRoughingHeightmapToolpath(part) {
+  const params = getCamParameters();
+  const cam = ensureCam(part);
+  const heightmap = cam.heightmap || generateHeightmapForPart(part);
+  computeProtectedHeightmap(heightmap, params.stockToLeave);
+  const points = [];
+  const removedKeys = new Set();
+  let layers = 0;
+  let skippedProtectedPoints = 0;
+  const zTop = Math.min(ctx.discHeight / 2, heightmap.bounds.maxZ + params.tool.diameter + params.stepDown);
+  const zBottom = Math.max(-ctx.discHeight / 2, heightmap.bounds.minZ);
+  const xyStep = Math.max(heightmap.resolution, params.stepOver);
+
+  for (let z = zTop; z >= zBottom; z -= params.stepDown) {
+    layers += 1;
+    let direction = 1;
+    for (let y = heightmap.bounds.minY; y <= heightmap.bounds.maxY; y += xyStep) {
+      const rowPoints = [];
+      for (let x = heightmap.bounds.minX; x <= heightmap.bounds.maxX; x += xyStep) {
+        const cell = getNearestHeightmapCell(heightmap, x, y);
+        if (cell && cell.hasSurface && z <= cell.protectedZ) {
+          skippedProtectedPoints += 1;
+          continue;
+        }
+        if (cell && cell.hasSurface) removedKeys.add(`${cell.row}:${cell.col}`);
+        rowPoints.push(vectorData(new ctx.THREE.Vector3(x, y, z)));
+      }
+      if (direction < 0) rowPoints.reverse();
+      rowPoints.forEach(point => points.push(point));
+      direction *= -1;
+    }
+  }
+
+  const path = makeHeightmapToolpath("Desbaste heightmap", params, heightmap, points, layers, false, "Desbaste heightmap 2.5D listo. No atraviesa la zona protegida del STL.");
+  path.skippedProtectedPoints = skippedProtectedPoints;
+  cam.toolpaths.push(path);
+  updateHeightmapAnalysis(cam, heightmap, removedKeys.size, skippedProtectedPoints, false, path.status);
+  return path;
+}
+
+function generateFinishingHeightmapToolpath(part) {
+  const params = getCamParameters();
+  const cam = ensureCam(part);
+  const heightmap = cam.heightmap || generateHeightmapForPart(part);
+  computeProtectedHeightmap(heightmap, Math.min(params.stockToLeave, 0.05));
+  const points = [];
+  let direction = 1;
+  for (let row = 0; row < heightmap.rows; row += 1) {
+    const rowCells = [];
+    for (let col = 0; col < heightmap.cols; col += 1) {
+      const cell = heightmap.cells[row * heightmap.cols + col];
+      if (cell && cell.hasSurface) rowCells.push(vectorData(new ctx.THREE.Vector3(cell.x, cell.y, cell.protectedZ)));
+    }
+    if (direction < 0) rowCells.reverse();
+    rowCells.forEach(point => points.push(point));
+    direction *= -1;
+  }
+  const path = makeHeightmapToolpath("Acabado heightmap", params, heightmap, points, 1, false, "Acabado heightmap demo. No reemplaza calculo 3D real de superficie.");
+  cam.toolpaths.push(path);
+  updateHeightmapAnalysis(cam, heightmap, points.length, 0, false, path.status);
+  return path;
+}
+
+function makeHeightmapToolpath(strategy, params, heightmap, points, layers, overcut, status) {
+  const length = calculatePathLength(points);
+  return {
+    id: `heightmap_toolpath_${Date.now()}`,
+    strategy,
+    source: "heightmap_2_5d_demo",
+    tool: params.tool,
+    tolerance: params.tolerance,
+    stockToLeave: params.stockToLeave,
+    stepOver: params.stepOver,
+    stepDown: params.stepDown,
+    heightmapInfo: heightmapInfo(heightmap),
+    points,
+    layers,
+    length: Number(length.toFixed(3)),
+    estimatedTime: Number((length / Math.max(params.feedRate, 1)).toFixed(2)),
+    possibleOvercut: overcut,
+    status,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function updateHeightmapAnalysis(cam, heightmap, machinedPoints, skippedProtectedPoints, possibleOvercut, status) {
+  const removable = Math.max(1, heightmap.surfacePoints || 0);
+  cam.heightmapInfo = heightmapInfo(heightmap);
+  cam.simulation.removedCellsCount = machinedPoints;
+  cam.simulation.remainingCellsCount = Math.max(0, removable - machinedPoints);
+  cam.simulation.status = status;
+  cam.analysis.heightmapResolution = heightmap.resolution;
+  cam.analysis.surfacePoints = heightmap.surfacePoints;
+  cam.analysis.protectedPoints = heightmap.protectedPoints || heightmap.surfacePoints;
+  cam.analysis.machinedPoints = machinedPoints;
+  cam.analysis.skippedProtectedPoints = skippedProtectedPoints;
+  cam.analysis.coverageDemo = Math.min(100, machinedPoints / removable * 100);
+  cam.analysis.possibleOvercut = !!possibleOvercut;
+  cam.analysis.comparisonReal = false;
+  cam.analysis.status = possibleOvercut ? "Posible sobrecorte detectado en heightmap." : status;
+}
+
+function heightmapInfo(heightmap) {
+  return {
+    resolution: Number(heightmap.resolution.toFixed(3)),
+    rows: heightmap.rows,
+    cols: heightmap.cols,
+    bounds: heightmap.bounds,
+    surfacePoints: heightmap.surfacePoints,
+    generatedAt: heightmap.generatedAt
+  };
+}
+
+function ensureHeightmapForSelectedPart() {
+  if (!ctx.requireModel()) return null;
+  const cam = ensureCam(ctx.selectedModel);
+  return cam.heightmap || generateHeightmapForPart(ctx.selectedModel);
+}
+
+function sampledHeightmapPoints(heightmap, zSelector) {
+  const points = [];
+  const surfaceCells = heightmap.cells.filter(cell => cell.hasSurface);
+  const max = 900;
+  const step = Math.max(1, Math.ceil(surfaceCells.length / max));
+  for (let i = 0; i < surfaceCells.length; i += step) {
+    const cell = surfaceCells[i];
+    points.push(new ctx.THREE.Vector3(cell.x, cell.y, zSelector(cell)));
+  }
+  return points;
+}
+
+function showHeightmap(silent) {
+  const heightmap = ensureHeightmapForSelectedPart();
+  if (!heightmap) return;
+  removeVisualList(camVisuals.heightmap);
+  const points = sampledHeightmapPoints(heightmap, cell => cell.zSurface);
+  createMarkerCloud(points, Math.max(heightmap.resolution * 0.22, 0.12), 0x38bdf8, 0.55, camVisuals.heightmap);
+  applyCamVisibility();
+  if (!silent) ctx.setStatus("Heightmap visible: puntos detectados sobre la superficie STL.", "ok");
+}
+
+function showRoughingTolerance(silent) {
+  const heightmap = ensureHeightmapForSelectedPart();
+  if (!heightmap) return;
+  removeVisualList(camVisuals.tolerance);
+  computeProtectedHeightmap(heightmap, getCamParameters().stockToLeave);
+  const points = sampledHeightmapPoints(heightmap, cell => cell.protectedZ);
+  createMarkerCloud(points, Math.max(heightmap.resolution * 0.24, 0.14), 0xfacc15, 0.44, camVisuals.tolerance);
+  applyCamVisibility();
+  if (!silent) ctx.setStatus("Tolerancia de desbaste visible: STL + stock to leave.", "ok");
+}
+
+function showMaterialToRemoveFromHeightmap(silent) {
+  const heightmap = ensureHeightmapForSelectedPart();
+  if (!heightmap) return;
+  clearRemovedMaterialVisuals();
+  const params = getCamParameters();
+  computeProtectedHeightmap(heightmap, params.stockToLeave);
+  const zTop = Math.min(ctx.discHeight / 2, heightmap.bounds.maxZ + params.tool.diameter);
+  const points = [];
+  const surfaceCells = heightmap.cells.filter(cell => cell.hasSurface && cell.protectedZ < zTop);
+  const step = Math.max(1, Math.ceil(surfaceCells.length / 700));
+  for (let i = 0; i < surfaceCells.length; i += step) {
+    const cell = surfaceCells[i];
+    const z = Math.min(zTop, cell.protectedZ + Math.max(params.stockToLeave, params.stepDown * 0.5));
+    points.push(new ctx.THREE.Vector3(cell.x, cell.y, z));
+  }
+  createMarkerCloud(points, Math.max(params.tool.diameter * 0.18, 0.12), 0xf97316, 0.42, camVisuals.removed);
+  const cam = ensureCam(ctx.selectedModel);
+  cam.simulation.removedMarkersCount = points.length;
+  cam.simulation.removedCellsCount = points.length;
+  cam.analysis.machinedPoints = Math.max(cam.analysis.machinedPoints || 0, points.length);
+  cam.analysis.status = "Material a remover demo calculado por encima del heightmap protegido.";
+  updateHeightmapMetrics();
+  updateCamPanel();
+  if (!silent) ctx.setStatus("Material a remover visible: solo por encima de protectedZ.", "ok");
+}
+
+function showRemainingStockFromHeightmap(silent) {
+  const heightmap = ensureHeightmapForSelectedPart();
+  if (!heightmap) return;
+  removeCamObject(camVisuals.machined);
+  const group = new ctx.THREE.Group();
+  const points = sampledHeightmapPoints(heightmap, cell => cell.protectedZ);
+  createMarkerCloud(points, Math.max(heightmap.resolution * 0.24, 0.14), 0x94a3b8, 0.35, null, group);
+  group.userData.camVisual = true;
+  ctx.scene.add(group);
+  camVisuals.machined = group;
+  const cam = ensureCam(ctx.selectedModel);
+  cam.result = { type: "heightmap_remaining_stock_demo", tolerance: getCamParameters().stockToLeave, status: "Stock remanente aproximado sobre protectedZ. Requiere acabado." };
+  cam.analysis.remainingMaterialDemo = true;
+  cam.analysis.status = "Stock remanente heightmap: queda material de tolerancia para acabado.";
+  updateHeightmapMetrics();
+  updateCamPanel();
+  applyCamVisibility();
+  if (!silent) ctx.setStatus("Stock remanente heightmap visible. Falta acabado.", "warning");
+}
+
+function simulateHeightmapToolpath() {
+  return startCamSimulation();
+}
+
+function updateHeightmapMetrics() {
+  const cam = ctx.selectedModel ? ensureCam(ctx.selectedModel) : null;
+  if (!cam) return;
+  const info = cam.heightmapInfo;
+  const analysis = cam.analysis || {};
+  if (info) {
+    setCamText("camLayerCount", `${info.rows} x ${info.cols}`);
+    setCamText("camMaxError", `Superficie ${analysis.surfacePoints || info.surfacePoints || 0}`);
+    setCamText("camAvgError", `Resolucion ${(analysis.heightmapResolution || info.resolution || 0).toFixed(2)} mm`);
+    setCamText("camComparisonStatus", analysis.status || "Comparacion real pendiente");
+  }
+}
+
+function clearHeightmapVisuals() {
+  removeVisualList(camVisuals.heightmap);
+  removeVisualList(camVisuals.tolerance);
 }
 
 function computeProtectedZoneDemo(part, tolerance, tool) {
@@ -406,22 +752,22 @@ export function generateDemoToolpath() {
   const part = ctx.selectedModel;
   const params = getCamParameters();
   const cam = ensureCam(part);
-  const path = params.strategy === "Acabado" ? generateFinishingToolpathDemo(part) : generateRoughingToolpathDemo(part);
+  const path = params.strategyId === "finishing" ? generateFinishingHeightmapToolpath(part) : generateRoughingHeightmapToolpath(part);
   cam.strategy = path.strategy;
   cam.tool = path.tool;
   cam.tolerance = path.tolerance;
   cam.stepOver = path.stepOver;
   cam.stepDown = path.stepDown;
-  cam.protectedZone = path.protectedZone;
-  cam.toolpaths.push(path);
+  cam.protectedZone = path.heightmapInfo;
   cam.simulation.status = path.status;
   cam.analysis.possibleOvercut = !!path.possibleOvercut;
   cam.analysis.comparisonReal = false;
-  cam.analysis.status = path.possibleOvercut ? "La herramienta invade la zona protegida del STL objetivo." : "Demo CAM aproximado: comparacion real pendiente.";
+  cam.analysis.status = path.possibleOvercut ? "La herramienta invade la zona protegida del STL objetivo." : path.status;
   drawToolpath(path);
   showDesignTarget(true);
-  showToleranceOffsetDemo(true);
+  showRoughingTolerance(true);
   updateCamPanel();
+  updateHeightmapMetrics();
   ctx.setStatus(path.status, path.possibleOvercut ? "warning" : "ok");
 }
 
@@ -500,7 +846,7 @@ function showMaterialToRemoveDemo(silent) {
 }
 
 function showRemovedMaterialDemo(silent) {
-  return showMaterialToRemoveDemo(silent);
+  return showMaterialToRemoveFromHeightmap(silent);
 }
 
 function showStockRemainingDemo(silent) {
@@ -543,7 +889,7 @@ function showStockRemainingDemo(silent) {
 }
 
 function showMachinedStockApproximation(silent) {
-  return showStockRemainingDemo(silent);
+  return showRemainingStockFromHeightmap(silent);
 }
 
 function createMarkerCloud(points, radius, color, opacity, list, parent) {
@@ -631,7 +977,7 @@ export function stepCamAnimation() {
   camSimulation.currentIndex += 1;
   if (camSimulation.currentIndex >= camSimulation.pathPoints.length) {
     stopCamSimulation("Simulacion finalizada");
-    showStockRemainingDemo(true);
+    showRemainingStockFromHeightmap(true);
     compareApproxMachinedStockToDesign(true);
     ctx.setStatus("Simulacion CAM finalizada. Revisar remanente y acabado pendiente.", "ok");
   }
@@ -727,8 +1073,8 @@ export function rebuildCamVisualsForModel(model) {
   if (!model) return;
   const cam = ensureCam(model);
   cam.toolpaths.forEach(drawToolpath);
-  if (cam.result && cam.result.type) showStockRemainingDemo(true);
-  if (cam.protectedZone) showToleranceOffsetDemo(true);
+  if (cam.result && cam.result.type && cam.heightmap) showRemainingStockFromHeightmap(true);
+  if (cam.heightmap) showRoughingTolerance(true);
   applyCamVisibility();
   updateCamPanel();
 }
@@ -746,6 +1092,8 @@ function clearCamVisualObjects(resetTool) {
   removeVisualList(camVisuals.toolpaths);
   removeVisualList(camVisuals.removed);
   removeVisualList(camVisuals.overcut);
+  removeVisualList(camVisuals.heightmap || []);
+  removeVisualList(camVisuals.tolerance || []);
   removeCamObject(camVisuals.tool);
   removeCamObject(camVisuals.machined);
   removeCamObject(camVisuals.comparison);
@@ -794,6 +1142,8 @@ function applyCamVisibility() {
   camVisuals.toolpaths.forEach(obj => obj.visible = ctx.camVisibility.toolpath);
   camVisuals.removed.forEach(obj => obj.visible = ctx.camVisibility.removed);
   camVisuals.overcut.forEach(obj => obj.visible = ctx.camVisibility.comparison);
+  (camVisuals.heightmap || []).forEach(obj => obj.visible = ctx.camVisibility.comparison);
+  (camVisuals.tolerance || []).forEach(obj => obj.visible = ctx.camVisibility.comparison);
   if (camVisuals.tool) camVisuals.tool.visible = ctx.camVisibility.tool;
   if (camVisuals.machined) camVisuals.machined.visible = ctx.camVisibility.machined;
   if (camVisuals.comparison) camVisuals.comparison.visible = ctx.camVisibility.comparison;
@@ -843,7 +1193,8 @@ export function getCamSettings() {
     stepDown: Number(params.stepDown.toFixed(3)),
     rpm: Number(params.rpm),
     feedRate: Number(params.feedRate),
-    stockToLeave: Number(params.stockToLeave.toFixed(3))
+    stockToLeave: Number(params.stockToLeave.toFixed(3)),
+    heightmapResolution: Number(heightmapResolution().toFixed(3))
   };
 }
 
@@ -864,6 +1215,7 @@ export function applyCamSettings(settings) {
   setInputValue("camRpm", String(settings.rpm || findTool(settings.toolId).defaultRpm));
   setInputValue("camFeedRate", String(settings.feedRate || findMaterial(settings.materialId).roughingFeed));
   setInputValue("camStockToLeave", Number(settings.stockToLeave || findStrategy(settings.strategyId).stockToLeave || 0).toFixed(2));
+  if (settings.heightmapResolution) setInputValue("camHeightmapResolution", Number(settings.heightmapResolution).toFixed(2));
   updateCamPanel();
 }
 
@@ -878,7 +1230,8 @@ export function serializeCamForPart(model) {
     stepDown: cam.stepDown || numberInput("camStepDown", 1.5),
     settings,
     protectedZone: cam.protectedZone || null,
-    toolpaths: cam.toolpaths || [],
+    heightmapInfo: cam.heightmapInfo || (cam.heightmap ? heightmapInfo(cam.heightmap) : null),
+    toolpaths: serializeToolpaths(cam.toolpaths || []),
     simulation: {
       removedMarkersCount: cam.simulation.removedMarkersCount || 0,
       removedCellsCount: cam.simulation.removedCellsCount || 0,
@@ -891,9 +1244,27 @@ export function serializeCamForPart(model) {
       possibleOvercut: !!cam.analysis.possibleOvercut,
       comparisonReal: false,
       remainingMaterialDemo: cam.analysis.remainingMaterialDemo !== false,
+      heightmapResolution: cam.analysis.heightmapResolution || 0,
+      surfacePoints: cam.analysis.surfacePoints || 0,
+      machinedPoints: cam.analysis.machinedPoints || 0,
+      protectedPoints: cam.analysis.protectedPoints || 0,
+      skippedProtectedPoints: cam.analysis.skippedProtectedPoints || 0,
+      coverageDemo: cam.analysis.coverageDemo || 0,
       status: cam.analysis.status || "Demo CAM aproximado"
     }
   };
+}
+
+function serializeToolpaths(toolpaths) {
+  const maxSavedPoints = 5000;
+  return toolpaths.map(path => {
+    const points = Array.isArray(path.points) ? path.points : [];
+    return Object.assign({}, path, {
+      points: points.length <= maxSavedPoints ? points : [],
+      pointsOmitted: points.length > maxSavedPoints,
+      originalPointCount: points.length
+    });
+  });
 }
 
 export function hydrateCamFromJson(model, camData) {
@@ -908,6 +1279,7 @@ export function restoreCamForPart(model, camData) {
     stepOver: camData && camData.stepOver,
     stepDown: camData && camData.stepDown,
     protectedZone: camData && camData.protectedZone,
+    heightmapInfo: camData && camData.heightmapInfo,
     toolpaths: Array.isArray(camData && camData.toolpaths) ? camData.toolpaths : [],
     simulation: camData && camData.simulation ? camData.simulation : {},
     result: camData && camData.result ? camData.result : {},
@@ -915,5 +1287,8 @@ export function restoreCamForPart(model, camData) {
     analysis: camData && camData.analysis ? camData.analysis : {}
   };
   ensureCam(model);
+  if (model.cam.heightmapInfo && !model.cam.heightmap) {
+    model.cam.analysis.status = "Regenere heightmap para visualizar trayectoria completa.";
+  }
   if (model === ctx.selectedModel && ctx.currentMode === "CAM") rebuildCamVisualsForModel(model);
 }
